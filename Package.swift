@@ -10,7 +10,10 @@ let package = Package(
         .executable(name: "PhotoAIMac", targets: ["PhotoAIMac"])
     ],
     targets: [
-        .executableTarget(name: "PhotoAIMac"),
+        .executableTarget(
+            name: "PhotoAIMac",
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .testTarget(name: "PhotoAIMacTests", dependencies: ["PhotoAIMac"])
     ]
 )

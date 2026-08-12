@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var luts: LUTStore
     @EnvironmentObject private var batch: BatchWorkflowStore
+    @EnvironmentObject private var archive: ArchiveCoordinator
 
     var body: some View {
         Form {
@@ -25,6 +26,18 @@ struct SettingsView: View {
             Section("Catalog") {
                 LabeledContent("已添加来源", value: "\(catalog.sources.count) 个")
                 LabeledContent("已索引照片", value: "\(catalog.assets.count) 张")
+            }
+
+            Section("离线预览归档") {
+                let cache = catalog.archivePreviewCacheStatistics()
+                LabeledContent("持久预览", value: "\(cache.assetCount) 张")
+                LabeledContent("当前占用", value: ByteCountFormatter.string(fromByteCount: cache.byteSize, countStyle: .file))
+                Text("离线预览保存在本机 Application Support，用于原始来源离线时识别照片；它不是原图备份。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(archive.progress.description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("LUT") {

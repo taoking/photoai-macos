@@ -9,10 +9,29 @@ struct ThumbnailRequest: Sendable, Hashable {
     let relativePath: String
     let modificationDate: Date?
     let mediaType: PhotoMediaType
+    let offlinePreviewURL: URL?
+
+    init(
+        assetID: UUID,
+        bookmarkData: Data,
+        lastKnownRootPath: String,
+        relativePath: String,
+        modificationDate: Date?,
+        mediaType: PhotoMediaType,
+        offlinePreviewURL: URL? = nil
+    ) {
+        self.assetID = assetID
+        self.bookmarkData = bookmarkData
+        self.lastKnownRootPath = lastKnownRootPath
+        self.relativePath = relativePath
+        self.modificationDate = modificationDate
+        self.mediaType = mediaType
+        self.offlinePreviewURL = offlinePreviewURL
+    }
 
     var cacheKey: String {
         let timestamp = modificationDate?.timeIntervalSinceReferenceDate ?? 0
-        return "\(assetID.uuidString)-\(timestamp)"
+        return "\(assetID.uuidString)-\(timestamp)-\(offlinePreviewURL?.path ?? "")"
     }
 }
 
@@ -77,6 +96,10 @@ private enum ThumbnailRenderer {
         }
 
         let fileURL = rootURL.appendingPathComponent(request.relativePath)
+        return renderImage(at: fileURL) ?? request.offlinePreviewURL.flatMap(renderImage(at:))
+    }
+
+    private static func renderImage(at fileURL: URL) -> NSImage? {
         guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
 
         let options: [CFString: Any] = [

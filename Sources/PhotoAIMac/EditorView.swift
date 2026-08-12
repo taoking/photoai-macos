@@ -11,8 +11,14 @@ struct EditorView: View {
     var body: some View {
         Group {
             if let asset = catalog.selectedAsset {
-                if asset.supportsEditing {
+                if catalog.canEdit(asset) {
                     editor(for: asset)
+                } else if catalog.offlinePreviewURL(for: asset) != nil {
+                    ContentUnavailableView(
+                        "原始文件当前不可访问",
+                        systemImage: "externaldrive.badge.exclamationmark",
+                        description: Text("可以在归档中查看离线预览，但编辑与导出需要重新连接原始来源。")
+                    )
                 } else {
                     ContentUnavailableView(
                         "暂不支持编辑此文件",

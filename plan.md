@@ -2,7 +2,7 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 12.5 — Catalog Identity & Scale Hardening
+## 当前阶段：Phase 14 — Library Archive & Duplicate Import Guard
 
 ### Phase 0 — SDK / Reuse Spike（已完成）
 
@@ -109,6 +109,16 @@
 - [ ] 确定开源许可证（法律/授权选择）。
 - [x] 已初始化 Git、创建公开 `taoking/photoai-macos` 并推送 `main`；release tag 与 PR 不在本次范围。
 - [ ] 在已确定版本号与许可证后生成 unsigned `.app.zip`、SHA-256 与 BUILD-INFO。
+
+### Phase 14 — Library Archive & Duplicate Import Guard（进行中）
+
+- [x] 评估 JSON Catalog 的高频归档写入成本；保留 JSON 为用户状态恢复基线，并以 SQLite 保存哈希、位置、预览元数据和重复关系。
+- [x] 增加长期历史资产、物理位置、卷/文件资源标识、SHA-256、视觉指纹和状态模型；同一来源重扫复用稳定资产身份。
+- [x] 增加持久离线预览（1440 px JPEG / 0.72）、两项受限并发后台队列、暂停/续跑与重启后对未完成项目的安全恢复。
+- [x] 增加 Archive / History 入口、离线/缺失/多个副本/完全重复筛选、扫描摘要、来源检查器与重新关联入口。
+- [x] 将原图不可用时的 Grid/人物缩略图回退到离线预览，禁用编辑与原图导出，并清楚标明预览不是备份。
+- [x] 覆盖哈希持久化与失效、跨来源精确重复、离线/重新关联、历史保留、迁移备份、取消/续跑和 10k/50k SQLite 索引查找。
+- [x] 完成 Xcode 27 全量构建/测试、阶段文档、独立提交、推送 Draft PR 后停止。
 
 ## Phase 0 验证结果
 
