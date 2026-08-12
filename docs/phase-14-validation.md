@@ -63,9 +63,9 @@
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 2026-08-13 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test --filter ArchiveWorkflowTests` | 2026-08-13 通过，19 tests / 1 suite（含真实 50k `recordScan()`、50k 队列、50k 可用性索引和清理并发测试）。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 2026-08-13 通过，72 tests / 16 suites；真实 Sony ARW 由既有显式开关报告 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | 2026-08-13 `TEST SUCCEEDED`，72 tests / 16 suites；同一真实 RAW 测试明确 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test --filter ArchiveWorkflowTests` | 2026-08-13 通过，20 tests / 1 suite（含真实 50k `recordScan()`、50k 队列、50k 可用性索引、关系撤销缓存与清理并发测试）。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 2026-08-13 通过，73 tests / 16 suites；真实 Sony ARW 由既有显式开关报告 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | 2026-08-13 `TEST SUCCEEDED`，73 tests / 16 suites；同一真实 RAW 测试明确 `SKIPPED`。 |
 
 Xcode 日志仍有既有、已被测试隔离的系统/测试环境提示：损坏缩略图测试的 ImageIO 解码错误、Vision OCR E5 模型路径提示，以及大内存 JPEG 取消测试触发的 IOSurface 日志；均未导致测试失败。本记录不把本机测试目录的移动/重新关联表述为真实可移动磁盘硬件验收。
 

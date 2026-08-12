@@ -298,13 +298,21 @@ final class CatalogStore: ObservableObject {
         guard assetByID[result.assetID] != nil else { return }
         archiveMetadataByAssetID[result.assetID] = result.metadata
         var byKey = Dictionary(uniqueKeysWithValues: archiveRelationships.map { ($0.key, $0) })
+        let previouslyRelatedAssetIDs = Set(byKey.values.compactMap { relationship -> UUID? in
+            if relationship.firstAssetID == result.assetID { return relationship.secondAssetID }
+            if relationship.secondAssetID == result.assetID { return relationship.firstAssetID }
+            return nil
+        })
         byKey = byKey.filter { _, relationship in
             relationship.firstAssetID != result.assetID && relationship.secondAssetID != result.assetID
         }
         for relationship in relationships { byKey[relationship.key] = relationship }
         archiveRelationships = byKey.values.sorted { $0.discoveredAt > $1.discoveredAt }
         rebuildRelationshipLookups()
-        updateArchiveAvailability(for: Set([result.assetID]).union(relationships.flatMap { [$0.firstAssetID, $0.secondAssetID] }))
+        let affectedAssetIDs = Set([result.assetID])
+            .union(previouslyRelatedAssetIDs)
+            .union(relationships.flatMap { [$0.firstAssetID, $0.secondAssetID] })
+        updateArchiveAvailability(for: affectedAssetIDs)
         archiveRevision &+= 1
         guard latestArchiveScanAssetIDs.contains(result.assetID) else { return }
         for relationship in relationships {

@@ -495,6 +495,44 @@ struct ArchiveWorkflowTests {
         #expect(store.archiveAvailableCopyLocation(for: first)?.assetID == copy.id)
     }
 
+    @Test
+    @MainActor
+    func archiveAvailabilityRefreshesForBothSidesWhenDuplicateRelationshipIsRemoved() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+        let firstURL = sourceURL.appendingPathComponent("first.jpg")
+        let secondURL = sourceURL.appendingPathComponent("second.jpg")
+        try writeJPEG(to: firstURL, color: .systemOrange)
+        try Data(contentsOf: firstURL).write(to: secondURL)
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        let store = CatalogStore(storageURL: catalogURL)
+        await store.addFolder(sourceURL)
+        let coordinator = ArchiveCoordinator(catalogURL: catalogURL)
+        coordinator.start(catalog: store)
+        #expect(await waitForArchive(coordinator))
+        let first = try #require(store.assets.first(where: { $0.filename == "first.jpg" }))
+        let second = try #require(store.assets.first(where: { $0.filename == "second.jpg" }))
+        #expect(store.archiveAvailability(for: first) == .multipleCopies)
+        #expect(store.archiveAvailability(for: second) == .multipleCopies)
+
+        let replacementMetadata = ArchiveAssetMetadata(
+            exactHash: "changed-without-copy",
+            hashedFileSize: second.fileSize,
+            hashedModifiedAt: second.modifiedAt,
+            hashUpdatedAt: .now,
+            hashState: .complete,
+            previewState: .complete
+        )
+        store.applyArchiveProcessingResult(
+            ArchiveProcessingResult(assetID: second.id, metadata: replacementMetadata, didHash: true, didCreatePreview: false),
+            relationships: []
+        )
+        #expect(store.archiveAvailability(for: first) == .online)
+        #expect(store.archiveAvailability(for: second) == .online)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoAI-Mac-Archive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
