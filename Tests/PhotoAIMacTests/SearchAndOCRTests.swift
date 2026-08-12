@@ -72,11 +72,11 @@ struct SearchAndOCRTests {
     }
 
     private func waitForOCR(_ indexer: OCRIndexStore) async {
-        for _ in 0..<3_000 where indexer.state == .running || indexer.state == .paused {
+        // `start` may be invoked immediately after `pause`. The cancellation task
+        // finishes asynchronously, so a transient `.paused` is expected before
+        // it observes the queued resume request and switches back to `.running`.
+        for _ in 0..<3_000 where indexer.state != .completed {
             try? await Task.sleep(for: .milliseconds(10))
-            if indexer.state == .paused {
-                return
-            }
         }
     }
 

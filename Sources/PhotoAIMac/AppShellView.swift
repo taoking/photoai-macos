@@ -348,13 +348,16 @@ private struct PersonCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PersonFaceStrip(faces: samples)
-                .frame(height: 142)
+            PersonFaceHero(faces: samples)
+                .frame(maxWidth: .infinity)
+                .frame(height: 156)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(person.title)
                         .font(.headline)
+                        .lineLimit(1)
                     Text("\(people.faceCount(for: person)) 张关联照片")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -368,8 +371,9 @@ private struct PersonCard: View {
                             catalog.select(assetID: asset.id, in: catalog.assets.map(\.id), modifiers: [])
                         }
                     }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("在所有照片中定位此人物样本")
                 }
             }
 
@@ -404,24 +408,32 @@ private struct PersonCard: View {
             .font(.footnote)
         }
         .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
-private struct PersonFaceStrip: View {
+/// 每个人物只显示一个稳定的主预览，其他候选样本以数量提示呈现。
+/// 这样既能辨认人物，又不会在自适应网格中让多张图横向挤出卡片。
+private struct PersonFaceHero: View {
     let faces: [DetectedFace]
 
     var body: some View {
-        Group {
-            if faces.isEmpty {
-                ContentUnavailableView("暂无可用人脸预览", systemImage: "person.crop.circle.badge.questionmark")
+        ZStack(alignment: .bottomTrailing) {
+            if let face = faces.first {
+                PersonFacePreview(face: face)
             } else {
-                HStack(spacing: 6) {
-                    ForEach(faces) { face in
-                        PersonFacePreview(face: face)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
+                ContentUnavailableView("暂无可用人脸预览", systemImage: "person.crop.circle.badge.questionmark")
+            }
+
+            if faces.count > 1 {
+                Label("另有 \(faces.count - 1) 张样本", systemImage: "person.2.fill")
+                    .font(.caption2.weight(.medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .padding(8)
             }
         }
         .frame(maxWidth: .infinity)
@@ -453,6 +465,7 @@ private struct PersonFacePreview: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .onAppear {
             if let request { thumbnails.load(request) }
