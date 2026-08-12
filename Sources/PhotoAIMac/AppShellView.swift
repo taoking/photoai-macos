@@ -149,6 +149,24 @@ private struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("PhotoAI Mac")
+                            .font(.headline)
+                        Text("本地照片工作台")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    PhotoAIBrandMark()
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("PhotoAI Mac，本地照片工作台")
+                .listRowSeparator(.hidden)
+                .allowsHitTesting(false)
+            }
+
             ForEach(SidebarGroup.allCases) { group in
                 Section(group.title) {
                     ForEach(SidebarDestination.allCases.filter { $0.group == group }) { destination in
@@ -160,6 +178,18 @@ private struct SidebarView: View {
         }
         .navigationTitle("PhotoAI Mac")
         .listStyle(.sidebar)
+    }
+}
+
+private struct PhotoAIBrandMark: View {
+    var body: some View {
+        Image("PhotoAI-Logo", bundle: .module)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: 30, height: 30)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 

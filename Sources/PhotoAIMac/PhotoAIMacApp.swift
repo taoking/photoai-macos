@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -19,6 +20,10 @@ struct PhotoAIMacApp: App {
     init() {
         let catalogURL = CatalogPersistence.defaultFileURL
         _archive = StateObject(wrappedValue: ArchiveCoordinator(catalogURL: catalogURL))
+        if let iconURL = Bundle.module.url(forResource: "PhotoAI-Logo", withExtension: "png"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApplication.shared.applicationIconImage = icon
+        }
     }
 
     var body: some Scene {

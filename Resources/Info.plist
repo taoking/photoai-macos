@@ -8,6 +8,8 @@
     <string>PhotoAIMac</string>
     <key>CFBundleIdentifier</key>
     <string>com.taoking.PhotoAIMac</string>
+    <key>CFBundleIconFile</key>
+    <string>PhotoAI-Mac</string>
     <key>CFBundleName</key>
     <string>PhotoAI Mac</string>
     <key>CFBundlePackageType</key>

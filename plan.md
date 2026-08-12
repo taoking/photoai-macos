@@ -2,7 +2,16 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 14 — Hardening / Draft PR under review
+## 当前阶段：Phase 15 — Brand Identity
+
+### Phase 15 — Brand Identity（已完成）
+
+- [x] 设计 PhotoAI Mac 的原创摄影 / AI 标志。
+- [x] 生成 macOS `.icns` 应用图标，并配置到调试 App bundle。
+- [x] 在应用侧边栏使用同一品牌标志。
+- [x] 执行构建和自动化回归验证。
+
+## 已完成阶段：Phase 14 — Hardening / Draft PR under review
 
 ### Phase 0 — SDK / Reuse Spike（已完成）
 
