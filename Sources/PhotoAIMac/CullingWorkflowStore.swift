@@ -28,6 +28,7 @@ struct CullingAnalysisFailure: Identifiable, Hashable, Sendable {
 struct CullingAnalysisResult: Sendable {
     let recommendations: [CullingRecommendation]
     let failures: [CullingAnalysisFailure]
+    let similarityStatistics: SimilarityCandidatePlan.Statistics
 }
 
 enum CullingState: Equatable {
@@ -73,21 +74,28 @@ enum CullingAnalyzer {
             }
         }
 
-        var unassigned = Set(analyzed.indices)
-        var recommendations: [CullingRecommendation] = []
-        while let seed = unassigned.first {
-            var group = Set([seed])
-            var pending = [seed]
-            unassigned.remove(seed)
-            while let current = pending.popLast() {
-                for candidate in unassigned where shouldGroup(analyzed[current], analyzed[candidate]) {
-                    group.insert(candidate)
-                    pending.append(candidate)
-                }
-                unassigned.subtract(group)
+        let similarityPlan = SimilarityCandidatePlanner.plan(for: analyzed.map {
+            SimilarityCandidate(assetID: $0.request.assetID, captureDate: $0.request.captureDate, visualHash: $0.visualHash)
+        })
+        let analyzedByAssetID = Dictionary(uniqueKeysWithValues: analyzed.map { ($0.request.assetID, $0) })
+        var components = SimilarityComponentBuilder(assetIDs: analyzedByAssetID.keys)
+        for pair in similarityPlan.directLinks {
+            components.connect(pair.firstID, pair.secondID)
+        }
+        for pair in similarityPlan.candidatePairs {
+            try Task.checkCancellation()
+            guard let left = analyzedByAssetID[pair.firstID],
+                  let right = analyzedByAssetID[pair.secondID],
+                  shouldGroup(left, right) else {
+                continue
             }
-            guard group.count > 1 else { continue }
-            let members = group.map { analyzed[$0] }
+            components.connect(pair.firstID, pair.secondID)
+        }
+
+        var recommendations: [CullingRecommendation] = []
+        for group in components.groups() where group.count > 1 {
+            let members = group.compactMap { analyzedByAssetID[$0] }
+            guard members.count > 1 else { continue }
             let sortedMembers = members.sorted { $0.request.filename.localizedStandardCompare($1.request.filename) == .orderedAscending }
             let preferred = sortedMembers.max { preferenceScore(for: $0.signal) < preferenceScore(for: $1.signal) }!
             let signals = sortedMembers.map(\.signal)
@@ -103,7 +111,11 @@ enum CullingAnalyzer {
         }
 
         recommendations.sort { $0.assetIDs.map(\.uuidString).joined() < $1.assetIDs.map(\.uuidString).joined() }
-        return CullingAnalysisResult(recommendations: recommendations, failures: failures)
+        return CullingAnalysisResult(
+            recommendations: recommendations,
+            failures: failures,
+            similarityStatistics: similarityPlan.statistics
+        )
     }
 
     private struct AnalyzedAsset: Sendable {
@@ -113,7 +125,7 @@ enum CullingAnalyzer {
     }
 
     private static func shouldGroup(_ left: AnalyzedAsset, _ right: AnalyzedAsset) -> Bool {
-        guard capturesAreNear(left.request.captureDate, right.request.captureDate, within: 86_400) else { return false }
+        guard capturesAreNear(left.request.captureDate, right.request.captureDate, within: SimilarityCandidatePlanner.captureWindow) else { return false }
         return (left.visualHash ^ right.visualHash).nonzeroBitCount <= 6
     }
 
@@ -203,7 +215,7 @@ enum CullingAnalyzer {
     }
 
     private static func capturesAreNear(_ left: Date?, _ right: Date?, within interval: TimeInterval) -> Bool {
-        guard let left, let right else { return true }
+        guard let left, let right else { return false }
         return abs(left.timeIntervalSince(right)) <= interval
     }
 }

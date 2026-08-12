@@ -131,6 +131,11 @@ final class PeopleStore: ObservableObject {
         faces(for: person).count
     }
 
+    /// 人物可能在同一张照片中被记录到多个脸框；界面中的“关联照片”必须去重。
+    func photoCount(for person: PersonRecord) -> Int {
+        Set(faces(for: person).map(\.assetID)).count
+    }
+
     func faces(for person: PersonRecord) -> [DetectedFace] {
         faces.filter { face in
             guard let entityID = face.analyzerEntityID else { return false }
@@ -141,7 +146,14 @@ final class PeopleStore: ObservableObject {
     /// 选择面积较大的人脸作为识别线索；不会把这项启发式写入用户的人物记录。
     func representativeFaces(for person: PersonRecord, limit: Int = 3) -> [DetectedFace] {
         faces(for: person)
-            .sorted { faceArea($0) > faceArea($1) }
+            .sorted { left, right in
+                let leftArea = faceArea(left)
+                let rightArea = faceArea(right)
+                if leftArea != rightArea { return leftArea > rightArea }
+                let assetOrder = left.assetID.uuidString.localizedStandardCompare(right.assetID.uuidString)
+                if assetOrder != .orderedSame { return assetOrder == .orderedAscending }
+                return left.id.localizedStandardCompare(right.id) == .orderedAscending
+            }
             .prefix(max(0, limit))
             .map { $0 }
     }

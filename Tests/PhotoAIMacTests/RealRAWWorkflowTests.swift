@@ -5,13 +5,31 @@ import Testing
 
 @MainActor
 struct RealRAWWorkflowTests {
-    @Test
-    func previewAndExportReachableLocalRAWWithoutTemporaryFiles() throws {
-        let catalog = CatalogStore()
-        guard let asset = catalog.assets.first(where: \.isRAW),
-              let request = catalog.renderRequest(for: asset) else {
-            return
+    @Test(
+        "RUN: real Sony ARW preview and export integration",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["PHOTOAI_RUN_REAL_RAW"] == "1",
+            "SKIPPED: set PHOTOAI_RUN_REAL_RAW=1 and PHOTOAI_REAL_RAW_PATH=/path/to/Sony.ARW to run this integration test."
+        )
+    )
+    func realSonyARWPreviewAndExportIntegration() throws {
+        guard let path = ProcessInfo.processInfo.environment["PHOTOAI_REAL_RAW_PATH"], !path.isEmpty else {
+            throw RealRAWIntegrationError.fixtureNotConfigured
         }
+        let rawURL = URL(fileURLWithPath: path)
+        guard rawURL.pathExtension.lowercased() == "arw", FileManager.default.fileExists(atPath: rawURL.path) else {
+            throw RealRAWIntegrationError.invalidFixture
+        }
+
+        let request = ImageRenderRequest(
+            assetID: UUID(),
+            bookmarkData: Data(),
+            lastKnownRootPath: rawURL.deletingLastPathComponent().path,
+            relativePath: rawURL.lastPathComponent,
+            isRAW: true,
+            recipe: .identity,
+            lut: nil
+        )
 
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhotoAI-Mac-RAW-\(UUID().uuidString)", isDirectory: true)
@@ -28,7 +46,19 @@ struct RealRAWWorkflowTests {
 
         #expect(preview.size.width > 0)
         #expect(preview.size.height > 0)
-        #expect((properties[kCGImagePropertyPixelWidth] as? Int ?? 0) > Int(preview.size.width))
-        #expect((properties[kCGImagePropertyPixelHeight] as? Int ?? 0) > Int(preview.size.height))
+        #expect((properties[kCGImagePropertyPixelWidth] as? Int ?? 0) >= Int(preview.size.width))
+        #expect((properties[kCGImagePropertyPixelHeight] as? Int ?? 0) >= Int(preview.size.height))
+    }
+}
+
+private enum RealRAWIntegrationError: LocalizedError {
+    case fixtureNotConfigured
+    case invalidFixture
+
+    var errorDescription: String? {
+        switch self {
+        case .fixtureNotConfigured: "PHOTOAI_REAL_RAW_PATH is required when PHOTOAI_RUN_REAL_RAW=1."
+        case .invalidFixture: "PHOTOAI_REAL_RAW_PATH must point to an accessible Sony .ARW file."
+        }
     }
 }

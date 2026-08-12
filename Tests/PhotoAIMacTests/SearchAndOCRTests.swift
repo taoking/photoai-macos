@@ -29,7 +29,7 @@ struct SearchAndOCRTests {
     }
 
     @Test
-    func OCRIndexCanPauseAndResumeWithoutChangingSourceImage() async throws {
+    func OCRPauseThenImmediateResumeCompletesWithoutChangingSourceImage() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhotoAI-Mac-OCR-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
@@ -62,7 +62,7 @@ struct SearchAndOCRTests {
         #expect(indexer.state == .paused)
 
         indexer.start(catalog: catalog)
-        await waitForOCR(indexer)
+        #expect(await waitForOCR(indexer))
 
         #expect(indexer.state == .completed)
         #expect(indexer.completedCount == 1)
@@ -71,13 +71,49 @@ struct SearchAndOCRTests {
         #expect(try Data(contentsOf: firstImageURL) == originalData)
     }
 
-    private func waitForOCR(_ indexer: OCRIndexStore) async {
+    @Test
+    func OCRPauseAfterWorkerCancellationThenResumeCompletes() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Mac-OCR-DelayedResume-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let imageURL = rootURL.appendingPathComponent("ocr-delayed.jpg")
+        try writeTextFixtureJPEG(to: imageURL)
+        let source = PhotoSource(
+            id: UUID(), bookmarkData: Data(), displayName: "ocr fixture", lastKnownPath: rootURL.path,
+            createdAt: .now, lastScannedAt: .now, status: .ready, assetCount: 1
+        )
+        let asset = fixtureAsset(sourceID: source.id, filename: "ocr-delayed.jpg", fileExtension: "jpg", rawType: nil)
+        let catalogURL = rootURL.appendingPathComponent("catalog.json")
+        try CatalogPersistence(fileURL: catalogURL).save(CatalogSnapshot(sources: [source], assets: [asset]))
+
+        let catalog = CatalogStore(storageURL: catalogURL)
+        let indexer = OCRIndexStore()
+        indexer.start(catalog: catalog)
+        indexer.pause()
+        #expect(indexer.state == .paused)
+
+        // 让取消中的 worker 走到 finishIfNeeded；此时 resume 不应启动第二个并发 worker。
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(indexer.state == .paused)
+        indexer.resume(catalog: catalog)
+
+        #expect(await waitForOCR(indexer))
+        #expect(indexer.state == .completed)
+        #expect(indexer.completedCount == 1)
+        #expect(indexer.failureCount == 0)
+        #expect(catalog.assets.first?.ocrText != nil)
+    }
+
+    private func waitForOCR(_ indexer: OCRIndexStore) async -> Bool {
         // `start` may be invoked immediately after `pause`. The cancellation task
         // finishes asynchronously, so a transient `.paused` is expected before
         // it observes the queued resume request and switches back to `.running`.
         for _ in 0..<3_000 where indexer.state != .completed {
             try? await Task.sleep(for: .milliseconds(10))
         }
+        return indexer.state == .completed
     }
 
     private func fixtureAsset(sourceID: UUID, filename: String, fileExtension: String, rawType: String?) -> PhotoAsset {

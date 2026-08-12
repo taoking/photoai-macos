@@ -337,10 +337,6 @@ final class OCRIndexStore: ObservableObject {
             completedCount = 0
             failureCount = 0
         }
-        if indexingTask != nil {
-            resumeRequested = true
-            return
-        }
         resume(catalog: catalog)
     }
 
@@ -352,9 +348,16 @@ final class OCRIndexStore: ObservableObject {
     }
 
     func resume(catalog: CatalogStore) {
+        self.catalog = catalog
         guard state != .running else { return }
         guard !pendingRequests.isEmpty else {
             state = .completed
+            return
+        }
+        // `pause()` 取消的 worker 可能尚未执行完 `finishIfNeeded`。保留一个恢复请求，
+        // 由旧 worker 完成清理后启动新的 worker，避免两个 OCR 队列并发消费同一请求。
+        guard indexingTask == nil else {
+            resumeRequested = true
             return
         }
         state = .running

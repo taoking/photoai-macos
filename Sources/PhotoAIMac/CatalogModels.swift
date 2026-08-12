@@ -28,7 +28,8 @@ enum PhotoSourceStatus: String, Codable, Hashable, Sendable {
 }
 
 struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
-    let id: UUID
+    /// 对同一 source + relativePath 保持稳定；重扫时由 CatalogStore 复用已有 ID。
+    var id: UUID
     let sourceID: UUID
     let relativePath: String
     let filename: String

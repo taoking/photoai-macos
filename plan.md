@@ -2,7 +2,7 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 13 — Release Preparation
+## 当前阶段：Phase 12.5 — Catalog Identity & Scale Hardening
 
 ### Phase 0 — SDK / Reuse Spike（已完成）
 
@@ -94,7 +94,16 @@
 - [x] 覆盖大 Catalog、外置来源缺失、重启恢复、RAW 导出、导出/OCR 取消、缺失 LUT 与损坏缩略图。
 - [x] `swift test` 与 `xcodebuild test` 通过：43 tests / 13 suites（见 `docs/stability-validation.md`）。
 
-### Phase 13 — Release Preparation（进行中）
+### Phase 12.5 — Catalog Identity & Scale Hardening（已完成；Draft PR 待审）
+
+- [x] 重扫复用同一 `sourceID + relativePath` 的 `PhotoAsset.id`，并保留既有 Catalog 状态。
+- [x] 覆盖 Catalog → People → Rescan → Restart 回归，确保人脸记录仍指向原照片。
+- [x] 修正人物 Hero 的剩余关联照片计数，并使主预览排序可复现。
+- [x] 将 Cleanup 与 Culling 的相似性比较改为时间窗口和视觉候选桶，避免全库 O(n²)；无拍摄时间项目采用有界保守策略。
+- [x] 将真实 Sony ARW 改为显式 `RUN / SKIPPED` 集成测试，并强化 OCR 暂停/恢复竞争测试。
+- [x] 增加最小 GitHub Actions、阶段验证文档；在独立分支提交、推送并创建 Draft PR 后停止。
+
+### Phase 13 — Release Preparation（已暂停，等待 Phase 12.5 Release Gate）
 
 - [x] 更新 README、阶段验收记录和隐私说明。
 - [ ] 确定开源许可证（法律/授权选择）。

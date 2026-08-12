@@ -51,6 +51,33 @@ struct CatalogTests {
 
     @Test
     @MainActor
+    func rescanPreservesAssetIdentityAndLocalState() async throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let imageURL = rootURL.appendingPathComponent("stable-id.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: imageURL)
+        let catalogURL = rootURL.appendingPathComponent("catalog.json")
+        let store = CatalogStore(storageURL: catalogURL)
+        await store.addFolder(rootURL)
+        let original = try #require(store.assets.first)
+
+        store.select(assetID: original.id, in: [original.id], modifiers: [])
+        store.setRating(5)
+        store.setFlag(.pick)
+        store.toggleFavorite()
+        await store.rescan(try #require(store.sources.first?.id))
+        let rescanned = try #require(store.assets.first)
+
+        #expect(rescanned.id == original.id)
+        #expect(rescanned.rating == 5)
+        #expect(rescanned.flag == .pick)
+        #expect(rescanned.isFavorite)
+        #expect(store.selectedAssetIDs == [original.id])
+    }
+
+    @Test
+    @MainActor
     func marksUnresolvableSourceAsMissing() async throws {
         let rootURL = try makeTemporaryDirectory()
         let catalogURL = rootURL.appendingPathComponent("catalog.json")
