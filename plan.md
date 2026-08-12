@@ -4,14 +4,14 @@
 
 ## 当前阶段：Phase 15 — Apple Photos 系统相册接入
 
-### Phase 15 — Apple Photos 系统相册接入（已实现；Draft PR 与受控人工运行时复测待完成）
+### Phase 15 — Apple Photos 系统相册接入（已实现；Draft PR 与受控人工运行时复测待审）
 
 - [x] 从 `main` 建立独立 `agent/phase-15-apple-photos` 分支；不混入尚未合并的 Phase 14 PR #2。
 - [x] 按本机 Xcode 27 / macOS 27 SDK 核对 PhotoKit 公共授权、缓存缩略图和原始资源导出接口。
 - [x] 重构独立 Apple Photos 内存模型、授权状态、筛选、相簿与惰性 iCloud 状态。
 - [x] 实现可扩展的真实缩略图网格、多选、受限预览与检查器。
 - [x] 实现用户选择目录后的原始资源导入、冲突安全命名、进度、取消与 Catalog 接入。
-- [x] 补充纯模型测试、如实记录人工验证、完成构建测试；待提交、推送及 Draft PR。
+- [x] 补充纯模型测试、如实记录人工验证、完成构建测试、提交、推送及 Draft PR #3；未合并、不创建 Release。
 
 ### Phase 0 — SDK / Reuse Spike（已完成）
 
