@@ -110,7 +110,7 @@
 - [x] 已初始化 Git、创建公开 `taoking/photoai-macos` 并推送 `main`；release tag 与 PR 不在本次范围。
 - [ ] 在已确定版本号与许可证后生成 unsigned `.app.zip`、SHA-256 与 BUILD-INFO。
 
-### Phase 14 — Library Archive & Duplicate Import Guard（进行中）
+### Phase 14 — Library Archive & Duplicate Import Guard（已完成；Draft PR 待审）
 
 - [x] 评估 JSON Catalog 的高频归档写入成本；保留 JSON 为用户状态恢复基线，并以 SQLite 保存哈希、位置、预览元数据和重复关系。
 - [x] 增加长期历史资产、物理位置、卷/文件资源标识、SHA-256、视觉指纹和状态模型；同一来源重扫复用稳定资产身份。
