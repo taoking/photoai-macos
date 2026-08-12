@@ -452,6 +452,9 @@ final class CatalogStore: ObservableObject {
         let merged = scannedAssets.map { asset -> PhotoAsset in
             guard let existing = existingByKey[asset.identityKey] else { return asset }
             var preserved = asset
+            // Scanner 为新增项目分配 UUID；同一 source + relativePath 的既有项目必须保留稳定 ID，
+            // 否则 People、OCR、选择状态等跨模块引用会在重扫后失效。
+            preserved.id = existing.id
             preserved.rating = existing.rating
             preserved.flag = existing.flag
             preserved.isFavorite = existing.isFavorite

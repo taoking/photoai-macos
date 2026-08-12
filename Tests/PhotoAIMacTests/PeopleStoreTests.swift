@@ -62,7 +62,70 @@ struct PeopleStoreTests {
         let person = try #require(store.visiblePeople.first)
 
         #expect(store.faceCount(for: person) == 3)
+        #expect(store.photoCount(for: person) == 1)
         #expect(store.representativeFaces(for: person, limit: 2).map(\.id) == ["large", "middle"])
+    }
+
+    @Test
+    func representativeFacesUseDeterministicTieBreakers() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Mac-People-Preview-Ties-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = PeopleStore(
+            storageURL: directory.appendingPathComponent("people.json"),
+            workingDirectory: directory.appendingPathComponent("analysis", isDirectory: true)
+        )
+        let assetA = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let assetB = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        store.ingestDetectedFaces([
+            face(assetID: assetB, id: "b", entityID: "entity-a", width: 0.2, height: 0.2),
+            face(assetID: assetA, id: "z", entityID: "entity-a", width: 0.2, height: 0.2),
+            face(assetID: assetA, id: "a", entityID: "entity-a", width: 0.2, height: 0.2)
+        ])
+        let person = try #require(store.visiblePeople.first)
+
+        #expect(store.representativeFaces(for: person).map(\.id) == ["a", "z", "b"])
+    }
+
+    @Test
+    func peopleFacesRemainReachableAfterCatalogRescanAndRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Mac-Catalog-People-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let imageURL = directory.appendingPathComponent("person.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: imageURL)
+        let catalogURL = directory.appendingPathComponent("catalog.json")
+        let peopleURL = directory.appendingPathComponent("people.json")
+        let catalog = CatalogStore(storageURL: catalogURL)
+        await catalog.addFolder(directory)
+        let originalAsset = try #require(catalog.assets.first(where: { $0.filename == "person.jpg" }))
+
+        let people = PeopleStore(
+            storageURL: peopleURL,
+            workingDirectory: directory.appendingPathComponent("analysis", isDirectory: true)
+        )
+        people.ingestDetectedFaces([face(assetID: originalAsset.id, id: "face-person", entityID: "entity-person")])
+
+        await catalog.rescan(try #require(catalog.sources.first?.id))
+        let rescannedAsset = try #require(catalog.assets.first(where: { $0.relativePath == "person.jpg" }))
+        #expect(rescannedAsset.id == originalAsset.id)
+        #expect(people.faces.first?.assetID == rescannedAsset.id)
+
+        let restoredCatalog = CatalogStore(storageURL: catalogURL)
+        let restoredPeople = PeopleStore(
+            storageURL: peopleURL,
+            workingDirectory: directory.appendingPathComponent("analysis", isDirectory: true)
+        )
+        let restoredAsset = try #require(restoredCatalog.assets.first(where: { $0.relativePath == "person.jpg" }))
+        let restoredPerson = try #require(restoredPeople.visiblePeople.first)
+
+        #expect(restoredAsset.id == originalAsset.id)
+        #expect(restoredPeople.faces(for: restoredPerson).map(\.assetID) == [restoredAsset.id])
+        #expect(restoredPeople.photoCount(for: restoredPerson) == 1)
     }
 
     @Test

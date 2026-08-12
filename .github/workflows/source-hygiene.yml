@@ -1,0 +1,32 @@
+name: Source Hygiene
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check patch whitespace
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}"
+          else
+            git diff --check HEAD^ HEAD
+          fi
+
+      - name: Record platform boundary
+        shell: bash
+        run: |
+          test -f docs/phase-12.5-validation.md
+          echo "PhotoAI Mac runtime tests require the local macOS 27 / Xcode 27 beta environment."
+          echo "This workflow performs source hygiene only; it does not claim a macOS 27 build or real Sony ARW validation."

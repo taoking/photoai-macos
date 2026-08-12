@@ -40,7 +40,11 @@ enum CatalogScanner {
             assets.append(asset)
         }
 
-        return assets.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        return assets.sorted {
+            let filenameOrder = $0.filename.localizedStandardCompare($1.filename)
+            if filenameOrder != .orderedSame { return filenameOrder == .orderedAscending }
+            return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+        }
     }
 
     private static func makeAsset(

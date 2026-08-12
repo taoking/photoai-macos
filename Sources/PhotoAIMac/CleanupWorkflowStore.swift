@@ -74,6 +74,7 @@ struct CleanupAnalysisFailure: Identifiable, Hashable, Sendable {
 struct CleanupAnalysisResult: Sendable {
     var recommendations: [CleanupRecommendation]
     var failures: [CleanupAnalysisFailure]
+    var similarityStatistics: SimilarityCandidatePlan.Statistics
 }
 
 enum CleanupAnalysisState: Equatable {
@@ -187,38 +188,50 @@ enum CleanupAnalyzer {
             )
         }
 
-        let exactPairKeys = Set(exactPairs.flatMap { group in
-            group.combinations(ofCount: 2).map { pairKey($0[0], $0[1]) }
+        let similarityPlan = SimilarityCandidatePlanner.plan(for: perceptualHashes.map {
+            SimilarityCandidate(assetID: $0.request.assetID, captureDate: $0.request.captureDate, visualHash: $0.hash)
         })
-        for leftIndex in perceptualHashes.indices {
-            for rightIndex in perceptualHashes.indices.dropFirst(leftIndex + 1) {
-                try Task.checkCancellation()
-                let left = perceptualHashes[leftIndex]
-                let right = perceptualHashes[rightIndex]
-                guard !exactPairKeys.contains(pairKey(left.request.assetID, right.request.assetID)),
-                      left.request.captureDate.isNear(right.request.captureDate, within: 86_400),
-                      left.hash.nonzeroBitCountDifference(to: right.hash) <= 6 else {
-                    continue
-                }
-                let ordered = order([left.request.assetID, right.request.assetID], using: requests)
-                recommendations.append(
-                    CleanupRecommendation(
-                        id: UUID(),
-                        kind: .similar,
-                        assetIDs: ordered,
-                        candidateAssetIDs: Array(ordered.dropFirst()),
-                        suggestedKeepAssetID: ordered.first,
-                        explanation: "低分辨率视觉指纹相近；这是建议，不代表文件内容相同。"
-                    )
-                )
+        let visualByAssetID = Dictionary(uniqueKeysWithValues: perceptualHashes.map { ($0.request.assetID, $0) })
+        var similarComponents = SimilarityComponentBuilder(assetIDs: visualByAssetID.keys)
+
+        for pair in similarityPlan.directLinks {
+            guard !haveIdenticalContent(pair.firstID, pair.secondID, contentHashes: hashesByAssetID) else { continue }
+            similarComponents.connect(pair.firstID, pair.secondID)
+        }
+        for pair in similarityPlan.candidatePairs {
+            try Task.checkCancellation()
+            guard let left = visualByAssetID[pair.firstID],
+                  let right = visualByAssetID[pair.secondID],
+                  !haveIdenticalContent(pair.firstID, pair.secondID, contentHashes: hashesByAssetID),
+                  left.request.captureDate.isNear(right.request.captureDate, within: SimilarityCandidatePlanner.captureWindow),
+                  left.hash.nonzeroBitCountDifference(to: right.hash) <= 6 else {
+                continue
             }
+            similarComponents.connect(pair.firstID, pair.secondID)
+        }
+        for group in similarComponents.groups() where group.count > 1 {
+            let ordered = order(group, using: requests)
+            recommendations.append(
+                CleanupRecommendation(
+                    id: UUID(),
+                    kind: .similar,
+                    assetIDs: ordered,
+                    candidateAssetIDs: Array(ordered.dropFirst()),
+                    suggestedKeepAssetID: ordered.first,
+                    explanation: "低分辨率视觉指纹相近；这是建议，不代表文件内容相同。"
+                )
+            )
         }
 
         recommendations.sort {
             if $0.kind.rawValue != $1.kind.rawValue { return $0.kind.rawValue < $1.kind.rawValue }
             return $0.assetIDs.map(\.uuidString).joined() < $1.assetIDs.map(\.uuidString).joined()
         }
-        return CleanupAnalysisResult(recommendations: recommendations, failures: failures)
+        return CleanupAnalysisResult(
+            recommendations: recommendations,
+            failures: failures,
+            similarityStatistics: similarityPlan.statistics
+        )
     }
 
     private static func metadataRecommendations(for requests: [CleanupAssetRequest]) -> [CleanupRecommendation] {
@@ -306,8 +319,13 @@ enum CleanupAnalyzer {
         ["jpg", "jpeg", "heic", "heif", "png", "tif", "tiff", "gif", "bmp"].contains(fileExtension.lowercased())
     }
 
-    private static func pairKey(_ first: UUID, _ second: UUID) -> String {
-        [first.uuidString, second.uuidString].sorted().joined(separator: "/")
+    private static func haveIdenticalContent(
+        _ first: UUID,
+        _ second: UUID,
+        contentHashes: [UUID: String]
+    ) -> Bool {
+        guard let firstHash = contentHashes[first], let secondHash = contentHashes[second] else { return false }
+        return firstHash == secondHash
     }
 
     private static func perceptualHash(for url: URL) -> UInt64? {
@@ -476,18 +494,5 @@ private extension Date? {
 private extension UInt64 {
     func nonzeroBitCountDifference(to other: UInt64) -> Int {
         (self ^ other).nonzeroBitCount
-    }
-}
-
-private extension Array {
-    func combinations(ofCount count: Int) -> [[Element]] {
-        guard count == 2, self.count >= 2 else { return [] }
-        var result: [[Element]] = []
-        for index in indices {
-            for laterIndex in indices.dropFirst(index + 1) {
-                result.append([self[index], self[laterIndex]])
-            }
-        }
-        return result
     }
 }

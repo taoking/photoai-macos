@@ -345,10 +345,11 @@ private struct PersonCard: View {
     let person: PersonRecord
 
     private var samples: [DetectedFace] { people.representativeFaces(for: person) }
+    private var photoCount: Int { people.photoCount(for: person) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PersonFaceHero(faces: samples)
+            PersonFaceHero(faces: samples, remainingPhotoCount: max(0, photoCount - 1))
                 .frame(maxWidth: .infinity)
                 .frame(height: 156)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -358,7 +359,7 @@ private struct PersonCard: View {
                     Text(person.title)
                         .font(.headline)
                         .lineLimit(1)
-                    Text("\(people.faceCount(for: person)) 张关联照片")
+                    Text("\(photoCount) 张关联照片")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -417,6 +418,7 @@ private struct PersonCard: View {
 /// 这样既能辨认人物，又不会在自适应网格中让多张图横向挤出卡片。
 private struct PersonFaceHero: View {
     let faces: [DetectedFace]
+    let remainingPhotoCount: Int
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -426,8 +428,8 @@ private struct PersonFaceHero: View {
                 ContentUnavailableView("暂无可用人脸预览", systemImage: "person.crop.circle.badge.questionmark")
             }
 
-            if faces.count > 1 {
-                Label("另有 \(faces.count - 1) 张样本", systemImage: "person.2.fill")
+            if remainingPhotoCount > 0 {
+                Label("另有 \(remainingPhotoCount) 张关联照片", systemImage: "person.2.fill")
                     .font(.caption2.weight(.medium))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
