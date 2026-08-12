@@ -59,15 +59,23 @@
 - 50,000 条资产/位置与精确重复关系加载后，Archive 可用性、原始位置和可用副本都经预构建字典直接读取，不对每个 Archive 网格单元重复筛选全部数组。
 - `evicted`、`unsupported` 与 `retryableFailure` 预览状态不会在启动时无限自动重试；“重新建立离线预览”只恢复 `evicted` 与 `retryableFailure`，不重算已完成哈希；清理进行中的归档任务后，最终状态确定为 `evicted`。
 - OCR、人物分析、清理、智能选片、批量导出、编辑与渲染共用 `availableAssets` / `isOriginalAvailable` 口径；离线人物卡仍可显示既有本地预览。
+- Catalog merge 使用扫描 identity key 的预建 `Set`，50,000 条既有记录与 49,500 条复扫/新增记录不会嵌套扫描；稳定 ID、评分、Flag、收藏、配方、OCR 与缺失历史均有纯模型回归。
+- Worker 只 `UPDATE` 已由 bootstrap / recordScan 建立的 `archive_assets` 行。明确删除与迟到 worker 的竞态会丢弃结果并清理刚生成的 preview，绝不重建 archive row、位置、关系或视觉分段。
+- 显式删除在 archive DB 不可用时 Fail Closed，保留 JSON Catalog 并报告错误；Archive“完全重复”筛选使用已加载的 `Set` 进行 O(1) 查询。
+- 为避免 MainActor 在 USB/NAS 上对 50k 项逐个 `fileExists`，批量候选和归档调度先使用来源状态及 SQLite 位置可用性快照；真正读取原始文件前仍会做最终文件存在性确认。
 
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 2026-08-13 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test --filter ArchiveWorkflowTests` | 2026-08-13 通过，20 tests / 1 suite（含真实 50k `recordScan()`、50k 队列、50k 可用性索引、关系撤销缓存与清理并发测试）。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 2026-08-13 通过，73 tests / 16 suites；真实 Sony ARW 由既有显式开关报告 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | 2026-08-13 `TEST SUCCEEDED`，73 tests / 16 suites；同一真实 RAW 测试明确 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test --filter 'CatalogTests/catalogMergeHandlesFiftyThousandAssets\|ArchiveWorkflowTests/inFlightArchiveCannotRecreateExplicitlyRemovedAsset\|ArchiveWorkflowTests/catalogDeletionFailsClosedWhenArchiveIndexUnavailable\|ArchiveWorkflowTests/exactDuplicateArchiveFilterUsesIndexedLookup'` | 2026-08-13 通过，4 tests / 2 suites。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 2026-08-13 通过，77 tests / 16 suites；真实 Sony ARW 由既有显式开关报告 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | 2026-08-13 `TEST SUCCEEDED`，77 tests / 16 suites；同一真实 RAW 测试明确 `SKIPPED`。 |
 
 Xcode 日志仍有既有、已被测试隔离的系统/测试环境提示：损坏缩略图测试的 ImageIO 解码错误、Vision OCR E5 模型路径提示，以及大内存 JPEG 取消测试触发的 IOSurface 日志；均未导致测试失败。本记录不把本机测试目录的移动/重新关联表述为真实可移动磁盘硬件验收。
+
+## 延期 P2
+
+- Relationship runtime cache 仍在单项归档完成后重建关系数组与 lookup。当前正确性已有双端缓存失效回归；增量维护涉及关系删除、跨来源重扫与状态恢复，留待后续性能阶段以避免在合并前扩大风险。
 
 ## 已知限制
 

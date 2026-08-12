@@ -1254,9 +1254,7 @@ private struct ArchiveLibraryView: View {
             case .offline: catalog.archiveAvailability(for: asset) == .offline
             case .missing: catalog.archiveAvailability(for: asset) == .missing
             case .multipleCopies: catalog.archiveAvailability(for: asset) == .multipleCopies
-            case .exactDuplicates: catalog.archiveRelationships.contains { relationship in
-                relationship.kind == .exactDuplicate && (relationship.firstAssetID == asset.id || relationship.secondAssetID == asset.id)
-            }
+            case .exactDuplicates: catalog.hasExactDuplicate(for: asset)
             }
         }
     }

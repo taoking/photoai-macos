@@ -98,7 +98,7 @@ struct ArchiveWorkflowTests {
         let firstResult = try ArchiveProcessor.process(ArchiveProcessingRequest(asset: first, bookmarkData: Data(), rootPath: firstRoot.path, existingMetadata: .empty), previewDirectory: previewDirectory)
         _ = try persistence.save(result: firstResult)
         let secondResult = try ArchiveProcessor.process(ArchiveProcessingRequest(asset: second, bookmarkData: Data(), rootPath: secondRoot.path, existingMetadata: .empty), previewDirectory: previewDirectory)
-        let relationships = try persistence.save(result: secondResult)
+        let relationships = try persistence.save(result: secondResult).relationships
 
         #expect(relationships.contains { $0.kind == .exactDuplicate && Set([$0.firstAssetID, $0.secondAssetID]) == Set([first.id, second.id]) })
         #expect(!relationships.contains { $0.kind == .possibleVisualDuplicate })
@@ -531,6 +531,84 @@ struct ArchiveWorkflowTests {
         )
         #expect(store.archiveAvailability(for: first) == .online)
         #expect(store.archiveAvailability(for: second) == .online)
+    }
+
+    @Test
+    @MainActor
+    func inFlightArchiveCannotRecreateExplicitlyRemovedAsset() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+        let imageURL = sourceURL.appendingPathComponent("removed-during-work.jpg")
+        try writeJPEG(to: imageURL, color: .systemBlue)
+        let source = fixtureSource(id: UUID(), rootURL: sourceURL)
+        let asset = try fixtureAsset(sourceID: source.id, url: imageURL, rootURL: sourceURL)
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        try CatalogPersistence(fileURL: catalogURL).save(CatalogSnapshot(sources: [source], assets: [asset]))
+        let store = CatalogStore(storageURL: catalogURL)
+        let persistence = try ArchiveIndexPersistence(databaseURL: ArchiveIndexPersistence.databaseURL(for: catalogURL))
+
+        // 用户先明确删除 Catalog 项目；旧 worker 随后才完成。
+        store.removeLocalRecords(assetIDs: [asset.id])
+        #expect(!store.assets.contains(where: { $0.id == asset.id }))
+
+        let outcome = ArchiveCoordinator.process(
+            ArchiveProcessingRequest(asset: asset, bookmarkData: Data(), rootPath: sourceURL.path, existingMetadata: .empty),
+            persistence: persistence,
+            previewDirectory: root.appendingPathComponent("ArchivePreviews", isDirectory: true)
+        )
+        guard case .discarded = outcome else {
+            Issue.record("已删除资产的后台结果不应保存成功")
+            return
+        }
+
+        let loaded = try persistence.load(assetIDs: [asset.id])
+        #expect(loaded.metadata[asset.id] == nil)
+        #expect(loaded.locations.isEmpty)
+        #expect(loaded.relationships.isEmpty)
+        let previewDirectory = root.appendingPathComponent("ArchivePreviews", isDirectory: true)
+        let previewFiles = (try? FileManager.default.contentsOfDirectory(at: previewDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        #expect(previewFiles.flatMap { (try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)) ?? [] }.isEmpty)
+        #expect(!store.assets.contains(where: { $0.id == asset.id }))
+    }
+
+    @Test
+    @MainActor
+    func catalogDeletionFailsClosedWhenArchiveIndexUnavailable() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = fixtureSource(id: UUID(), rootURL: root)
+        let asset = PhotoAsset(id: UUID(), sourceID: source.id, relativePath: "kept.jpg", filename: "kept.jpg", fileExtension: "jpg", fileSize: 1, modifiedAt: .now, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 0, flag: .none, isFavorite: false)
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        try CatalogPersistence(fileURL: catalogURL).save(CatalogSnapshot(sources: [source], assets: [asset]))
+
+        let store = CatalogStore(storageURL: catalogURL, forceArchiveUnavailable: true)
+        store.removeLocalRecords(assetIDs: [asset.id])
+
+        #expect(store.assets.contains(where: { $0.id == asset.id }))
+        #expect(store.lastErrorMessage == "无法访问归档数据库，已取消删除。")
+    }
+
+    @Test
+    @MainActor
+    func exactDuplicateArchiveFilterUsesIndexedLookup() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = fixtureSource(id: UUID(), rootURL: root)
+        let first = syntheticAssets(sourceID: source.id, count: 2)[0]
+        let second = syntheticAssets(sourceID: source.id, count: 2)[1]
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        try CatalogPersistence(fileURL: catalogURL).save(CatalogSnapshot(sources: [source], assets: [first, second]))
+        let persistence = try ArchiveIndexPersistence(databaseURL: ArchiveIndexPersistence.databaseURL(for: catalogURL))
+        try persistence.bootstrap(sources: [source], assets: [first, second])
+        let metadata = ArchiveAssetMetadata(exactHash: "same-bytes", hashedFileSize: first.fileSize, hashedModifiedAt: first.modifiedAt, hashUpdatedAt: .now, hashState: .complete, previewState: .pending)
+        _ = try persistence.save(result: ArchiveProcessingResult(assetID: first.id, metadata: metadata, didHash: true, didCreatePreview: false))
+        _ = try persistence.save(result: ArchiveProcessingResult(assetID: second.id, metadata: metadata, didHash: true, didCreatePreview: false))
+
+        let store = CatalogStore(storageURL: catalogURL)
+        #expect(store.hasExactDuplicate(for: first))
+        #expect(store.hasExactDuplicate(for: second))
     }
 
     private func temporaryDirectory() throws -> URL {

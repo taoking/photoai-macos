@@ -17,6 +17,18 @@ struct ArchiveProcessingResult: Sendable {
     let didCreatePreview: Bool
 }
 
+/// `bootstrap` / `recordScan` 创建 archive row；worker 只能更新既有 row。
+/// 因此用户明确删除 Catalog 项目后，迟到的 worker 结果会被正常丢弃而非复活记录。
+enum ArchiveSaveResult: Sendable {
+    case saved([ArchiveDuplicateRelationship])
+    case discardedBecauseAssetWasRemoved
+
+    var relationships: [ArchiveDuplicateRelationship] {
+        if case let .saved(relationships) = self { return relationships }
+        return []
+    }
+}
+
 enum ArchiveProcessingError: LocalizedError, Equatable {
     case sourceUnavailable
     case unreadableImage
@@ -316,6 +328,8 @@ final class ArchiveCoordinator: ObservableObject {
                         await catalog?.applyArchiveProcessingResult(result, relationships: relationships)
                         await self?.recordCompletion(result: result, failed: false)
                         _ = request
+                    case let .discarded(request):
+                        await self?.recordDiscarded(assetID: request.asset.id)
                     case let .failure(request, error):
                         if error == .sourceUnavailable {
                             await catalog?.markArchiveLocationUnavailable(for: request.asset)
@@ -332,7 +346,7 @@ final class ArchiveCoordinator: ObservableObject {
         }
     }
 
-    nonisolated private static func process(
+    nonisolated static func process(
         _ request: ArchiveProcessingRequest,
         persistence: ArchiveIndexPersistence,
         previewDirectory: URL
@@ -340,8 +354,16 @@ final class ArchiveCoordinator: ObservableObject {
         do {
             let result = try ArchiveProcessor.process(request, previewDirectory: previewDirectory)
             if Task.isCancelled { return .cancelled(request) }
-            let relationships = try persistence.save(result: result)
-            return .success(request, result, relationships)
+            switch try persistence.save(result: result) {
+            case let .saved(relationships):
+                return .success(request, result, relationships)
+            case .discardedBecauseAssetWasRemoved:
+                if result.didCreatePreview,
+                   let previewURL = ArchiveProcessor.previewURL(for: result.metadata, previewDirectory: previewDirectory) {
+                    try? FileManager.default.removeItem(at: previewURL)
+                }
+                return .discarded(request)
+            }
         } catch is CancellationError {
             return .cancelled(request)
         } catch let error as ArchiveProcessingError {
@@ -378,6 +400,11 @@ final class ArchiveCoordinator: ObservableObject {
         progress.completedCount += 1
         progress.failureCount += 1
         lastErrorMessage = message
+    }
+
+    private func recordDiscarded(assetID: UUID) {
+        inFlightAssetIDs.remove(assetID)
+        progress.completedCount += 1
     }
 
     private func finishIfNeeded() {
@@ -457,8 +484,9 @@ struct ArchiveRequestQueue: Sendable {
     }
 }
 
-private enum ArchiveWorkOutcome: Sendable {
+enum ArchiveWorkOutcome: Sendable {
     case success(ArchiveProcessingRequest, ArchiveProcessingResult, [ArchiveDuplicateRelationship])
+    case discarded(ArchiveProcessingRequest)
     case failure(ArchiveProcessingRequest, ArchiveProcessingError)
     case cancelled(ArchiveProcessingRequest)
 }

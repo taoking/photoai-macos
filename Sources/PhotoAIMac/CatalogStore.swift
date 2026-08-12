@@ -39,7 +39,7 @@ final class CatalogStore: ObservableObject {
     private var assetByID: [UUID: PhotoAsset] = [:]
     private var scheduledArchiveAssetIDs = Set<UUID>()
 
-    init(storageURL: URL = CatalogPersistence.defaultFileURL) {
+    init(storageURL: URL = CatalogPersistence.defaultFileURL, forceArchiveUnavailable: Bool = false) {
         persistence = CatalogPersistence(fileURL: storageURL)
         archivePreviewDirectory = storageURL
             .deletingLastPathComponent()
@@ -56,6 +56,7 @@ final class CatalogStore: ObservableObject {
             }
         }
         do {
+            if forceArchiveUnavailable { throw CatalogStoreError.archiveUnavailable }
             archiveIndex = try ArchiveIndexPersistence(databaseURL: databaseURL)
         } catch {
             archiveIndex = nil
@@ -82,7 +83,9 @@ final class CatalogStore: ObservableObject {
         }
         rebuildSourceLookup()
         do {
-            try archiveIndex?.bootstrap(sources: sources, assets: assets)
+            if let archiveIndex {
+                try archiveIndex.bootstrap(sources: sources, assets: assets)
+            }
             reloadArchiveIndex()
         } catch {
             // SQLite 是可重新建立的派生索引；失败绝不能让既有 JSON Catalog 丢失或重置。
@@ -204,7 +207,7 @@ final class CatalogStore: ObservableObject {
 
     /// 需要读取原始字节的旧模块共享这一过滤口径；离线历史仍保留给浏览、人物预览和归档。
     var availableAssets: [PhotoAsset] {
-        assets.filter(isOriginalAvailable(for:))
+        assets.filter(isOriginalLikelyAvailable(for:))
     }
 
     var availableImageAssets: [PhotoAsset] {
@@ -287,7 +290,7 @@ final class CatalogStore: ObservableObject {
             let metadata = archiveMetadataByAssetID[asset.id] ?? .empty
             guard let source = sourceByID[asset.sourceID], source.status == .ready,
                   metadata.needsHash(for: asset) || metadata.needsPreview(for: asset),
-                  FileManager.default.fileExists(atPath: URL(fileURLWithPath: source.lastKnownPath).appendingPathComponent(asset.relativePath).path) else {
+                  isOriginalLikelyAvailable(for: asset) else {
                 return nil
             }
             return ArchiveProcessingRequest(asset: asset, bookmarkData: source.bookmarkData, rootPath: source.lastKnownPath, existingMetadata: metadata)
@@ -332,7 +335,8 @@ final class CatalogStore: ObservableObject {
         sources[sourceIndex].status = .missing
         rebuildSourceLookup()
         do {
-            try archiveIndex?.recordUnavailableSource(sourceID)
+            guard let archiveIndex else { throw CatalogStoreError.archiveUnavailable }
+            try archiveIndex.recordUnavailableSource(sourceID)
         } catch {
             lastErrorMessage = "无法更新离线来源的归档状态：\(error.localizedDescription)"
             return
@@ -348,7 +352,8 @@ final class CatalogStore: ObservableObject {
             return
         }
         do {
-            try archiveIndex?.recordUnavailableLocation(sourceID: source.id, relativePath: asset.relativePath)
+            guard let archiveIndex else { throw CatalogStoreError.archiveUnavailable }
+            try archiveIndex.recordUnavailableLocation(sourceID: source.id, relativePath: asset.relativePath)
             reloadArchiveIndex()
         } catch {
             lastErrorMessage = "无法更新缺失原文件的归档状态：\(error.localizedDescription)"
@@ -358,7 +363,8 @@ final class CatalogStore: ObservableObject {
     /// 仅供 ArchiveCoordinator 在取消并等待 worker 停止后调用，避免清理目录与写入预览竞态。
     func evictOfflinePreviews() throws {
         do {
-            try archiveIndex?.evictAllPreviews()
+            guard let archiveIndex else { throw CatalogStoreError.archiveUnavailable }
+            try archiveIndex.evictAllPreviews()
             try ArchiveProcessor.clearPreviews(at: archivePreviewDirectory)
             reloadArchiveIndex()
         } catch {
@@ -369,7 +375,8 @@ final class CatalogStore: ObservableObject {
 
     func restoreEvictedOfflinePreviews() -> [ArchiveProcessingRequest] {
         do {
-            let restoredIDs = try archiveIndex?.restoreEvictedPreviews() ?? []
+            guard let archiveIndex else { throw CatalogStoreError.archiveUnavailable }
+            let restoredIDs = try archiveIndex.restoreEvictedPreviews()
             reloadArchiveIndex()
             return archiveProcessingRequests(for: Set(restoredIDs))
         } catch {
@@ -379,7 +386,8 @@ final class CatalogStore: ObservableObject {
     }
 
     func archivePreviewCacheStatistics() -> (assetCount: Int, byteSize: Int64) {
-        (try? archiveIndex?.previewCacheStatistics()) ?? (0, 0)
+        guard let archiveIndex else { return (0, 0) }
+        return (try? archiveIndex.previewCacheStatistics()) ?? (0, 0)
     }
 
     func renderRequest(for asset: PhotoAsset, lut: LUTRenderRecipe? = nil) -> ImageRenderRequest? {
@@ -398,6 +406,19 @@ final class CatalogStore: ObservableObject {
     func isOriginalAvailable(for asset: PhotoAsset) -> Bool {
         guard let source = sourceByID[asset.sourceID], source.status == .ready else { return false }
         return FileManager.default.fileExists(atPath: URL(fileURLWithPath: source.lastKnownPath).appendingPathComponent(asset.relativePath).path)
+    }
+
+    /// 批量模块只读取 SQLite 的来源/位置快照，避免在 MainActor 为 50k 项逐一 stat 网络盘。
+    /// 真正的编辑、导出与 worker 读取前仍由 `isOriginalAvailable` / ArchiveProcessor 做 fileExists 确认。
+    private func isOriginalLikelyAvailable(for asset: PhotoAsset) -> Bool {
+        guard let source = sourceByID[asset.sourceID], source.status == .ready else { return false }
+        let locations = archiveLocationsByAssetID[asset.id] ?? []
+        guard !locations.isEmpty else { return true }
+        return locations.contains { $0.sourceID == source.id && $0.isAvailable }
+    }
+
+    func hasExactDuplicate(for asset: PhotoAsset) -> Bool {
+        !archiveExactDuplicateAssetIDsByAssetID[asset.id, default: []].isEmpty
     }
 
     func canEdit(_ asset: PhotoAsset) -> Bool {
@@ -578,8 +599,12 @@ final class CatalogStore: ObservableObject {
     /// 只有文件已成功移入系统废纸篓后才移除本地 Catalog 记录；绝不直接删除原文件。
     func removeLocalRecords(assetIDs: Set<UUID>) {
         guard !assetIDs.isEmpty else { return }
+        guard let archiveIndex else {
+            lastErrorMessage = "无法访问归档数据库，已取消删除。"
+            return
+        }
         do {
-            let previewPaths = try archiveIndex?.removeArchiveRecords(assetIDs: assetIDs) ?? []
+            let previewPaths = try archiveIndex.removeArchiveRecords(assetIDs: assetIDs)
             for relativePath in previewPaths {
                 let previewURL = archivePreviewDirectory.appendingPathComponent(relativePath)
                 if FileManager.default.fileExists(atPath: previewURL.path) {
@@ -762,34 +787,7 @@ final class CatalogStore: ObservableObject {
     }
 
     private func merge(_ scannedAssets: [PhotoAsset], for sourceID: UUID) {
-        let existingByKey = Dictionary(
-            uniqueKeysWithValues: assets
-                .filter { $0.sourceID == sourceID }
-                .map { ($0.identityKey, $0) }
-        )
-        let merged = scannedAssets.map { asset -> PhotoAsset in
-            guard let existing = existingByKey[asset.identityKey] else { return asset }
-            var preserved = asset
-            // Scanner 为新增项目分配 UUID；同一 source + relativePath 的既有项目必须保留稳定 ID，
-            // 否则 People、OCR、选择状态等跨模块引用会在重扫后失效。
-            preserved.id = existing.id
-            preserved.rating = existing.rating
-            preserved.flag = existing.flag
-            preserved.isFavorite = existing.isFavorite
-            preserved.editRecipe = existing.editRecipe
-            preserved.ocrText = existing.ocrText
-            return preserved
-        }
-
-        // 不能因一次扫描时文件缺席就抹掉历史记录。SQLite 中对应的 AssetLocation 会标为不可用，
-        // 已完成的离线预览、哈希、评分、配方和人物关联仍可浏览。
-        let historicalAssets = assets.filter { asset in
-            asset.sourceID == sourceID && !scannedAssets.contains { $0.identityKey == asset.identityKey }
-        }
-        assets.removeAll { $0.sourceID == sourceID }
-        assets.append(contentsOf: historicalAssets)
-        assets.append(contentsOf: merged)
-        assets.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        assets = CatalogMerge.merging(existingAssets: assets, scannedAssets: scannedAssets, sourceID: sourceID)
         selectedAssetIDs.formIntersection(Set(assets.map(\.id)))
         rebuildCatalogLookups()
     }
@@ -800,7 +798,8 @@ final class CatalogStore: ObservableObject {
         rebuildSourceLookup()
         if status == .missing || status == .inaccessible {
             do {
-                try archiveIndex?.recordUnavailableSource(sourceID)
+                guard let archiveIndex else { throw CatalogStoreError.archiveUnavailable }
+                try archiveIndex.recordUnavailableSource(sourceID)
             } catch {
                 lastErrorMessage = "无法更新离线来源的归档状态：\(error.localizedDescription)"
             }

@@ -121,7 +121,7 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
         )
     }
 
-    func save(result: ArchiveProcessingResult) throws -> [ArchiveDuplicateRelationship] {
+    func save(result: ArchiveProcessingResult) throws -> ArchiveSaveResult {
         lock.lock()
         defer { lock.unlock() }
         try execute("BEGIN IMMEDIATE;")
@@ -129,24 +129,20 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
             let metadata = result.metadata
             try execute(
                 """
-                INSERT INTO archive_assets (
-                    asset_id, exact_hash, visual_hash, hashed_file_size, hashed_modified_at, hash_updated_at,
-                    hash_state, preview_relative_path, preview_version, preview_width, preview_height,
-                    preview_byte_size, preview_generated_at, preview_source_modified_at, preview_state,
-                    first_seen_at, last_seen_at, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(asset_id) DO UPDATE SET
-                    exact_hash=excluded.exact_hash, visual_hash=excluded.visual_hash,
-                    hashed_file_size=excluded.hashed_file_size, hashed_modified_at=excluded.hashed_modified_at,
-                    hash_updated_at=excluded.hash_updated_at, hash_state=excluded.hash_state,
-                    preview_relative_path=excluded.preview_relative_path, preview_version=excluded.preview_version,
-                    preview_width=excluded.preview_width, preview_height=excluded.preview_height,
-                    preview_byte_size=excluded.preview_byte_size, preview_generated_at=excluded.preview_generated_at,
-                    preview_source_modified_at=excluded.preview_source_modified_at, preview_state=excluded.preview_state,
-                    last_seen_at=excluded.last_seen_at, last_error=excluded.last_error;
+                UPDATE archive_assets SET
+                    exact_hash=?, visual_hash=?, hashed_file_size=?, hashed_modified_at=?, hash_updated_at=?,
+                    hash_state=?, preview_relative_path=?, preview_version=?, preview_width=?, preview_height=?,
+                    preview_byte_size=?, preview_generated_at=?, preview_source_modified_at=?, preview_state=?,
+                    last_seen_at=?, last_error=?
+                WHERE asset_id = ?;
                 """,
-                bindings: archiveBindings(assetID: result.assetID, metadata: metadata)
+                bindings: archiveUpdateBindings(assetID: result.assetID, metadata: metadata)
             )
+            guard sqlite3_changes(database) == 1 else {
+                try execute("COMMIT;")
+                // 这是明确删除与后台 worker 的正常竞态，不应被当成用户可见错误。
+                return .discardedBecauseAssetWasRemoved
+            }
             // 文件内容变化后，旧 SHA / 视觉指纹得出的关系不再有效；在同一事务内重建。
             try deleteRelationships(for: result.assetID)
             try replaceVisualSegments(assetID: result.assetID, visualHash: metadata.visualHash)
@@ -159,7 +155,7 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
                 )
             }
             try execute("COMMIT;")
-            return relationships
+            return .saved(relationships)
         } catch {
             try? execute("ROLLBACK;")
             throw error
@@ -507,9 +503,9 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
         return result
     }
 
-    private func archiveBindings(assetID: UUID, metadata: ArchiveAssetMetadata) -> [SQLiteValue] {
+    private func archiveUpdateBindings(assetID: UUID, metadata: ArchiveAssetMetadata) -> [SQLiteValue] {
         let preview = metadata.preview
-        return [.text(assetID.uuidString), .optionalText(metadata.exactHash), .optionalText(metadata.visualHash.map(String.init)), .optionalInt64(metadata.hashedFileSize), .optionalDate(metadata.hashedModifiedAt), .optionalDate(metadata.hashUpdatedAt), .text(metadata.hashState.rawValue), .optionalText(preview?.relativePath), .optionalInt(preview?.version), .optionalInt(preview?.width), .optionalInt(preview?.height), .optionalInt64(preview?.byteSize), .optionalDate(preview?.generatedAt), .optionalDate(preview?.sourceModifiedAt), .text(metadata.previewState.rawValue), .optionalDate(metadata.firstSeenAt), .optionalDate(metadata.lastSeenAt), .optionalText(metadata.lastError)]
+        return [.optionalText(metadata.exactHash), .optionalText(metadata.visualHash.map(String.init)), .optionalInt64(metadata.hashedFileSize), .optionalDate(metadata.hashedModifiedAt), .optionalDate(metadata.hashUpdatedAt), .text(metadata.hashState.rawValue), .optionalText(preview?.relativePath), .optionalInt(preview?.version), .optionalInt(preview?.width), .optionalInt(preview?.height), .optionalInt64(preview?.byteSize), .optionalDate(preview?.generatedAt), .optionalDate(preview?.sourceModifiedAt), .text(metadata.previewState.rawValue), .optionalDate(metadata.lastSeenAt), .optionalText(metadata.lastError), .text(assetID.uuidString)]
     }
 
     private func locationBindings(_ location: AssetLocation) -> [SQLiteValue] {
