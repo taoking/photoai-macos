@@ -98,7 +98,7 @@
 
 - [x] 更新 README、阶段验收记录和隐私说明。
 - [ ] 确定开源许可证（法律/授权选择）。
-- [ ] 初始化 Git、创建公开 `taoking/photoai-macos`、提交并推送 `main`（用户已授权）；release tag 与 PR 不在本次范围。
+- [x] 已初始化 Git、创建公开 `taoking/photoai-macos` 并推送 `main`；release tag 与 PR 不在本次范围。
 - [ ] 在已确定版本号与许可证后生成 unsigned `.app.zip`、SHA-256 与 BUILD-INFO。
 
 ## Phase 0 验证结果
