@@ -1,0 +1,1246 @@
+import AppKit
+import SwiftUI
+
+struct AppShellView: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var luts: LUTStore
+    @EnvironmentObject private var batch: BatchWorkflowStore
+    @EnvironmentObject private var cleanup: CleanupWorkflowStore
+
+    var body: some View {
+        NavigationSplitView {
+            SidebarView(selection: $shell.selection)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
+        } detail: {
+            if shell.isEditorPresented {
+                EditorView()
+            } else {
+                HSplitView {
+                    LibraryPlaceholderView()
+
+                    if shell.isInspectorVisible {
+                        InspectorView()
+                            .frame(minWidth: 250, idealWidth: 300, maxWidth: 380)
+                    }
+                }
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onChange(of: shell.selection) { _, _ in
+            catalog.clearSelection()
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    Button("添加照片文件夹…") {
+                        catalog.chooseAndAddFolder()
+                    }
+                    Button("重新扫描当前来源") {
+                        catalog.startRescanAll()
+                        shell.announce("正在重新扫描本地来源。")
+                    }
+                } label: {
+                    Label("添加来源", systemImage: "plus")
+                }
+
+                Picker("缩略图大小", selection: $shell.gridDensity) {
+                    ForEach(GridDensity.allCases) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("筛选", selection: $catalog.filter) {
+                    ForEach(LibraryFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Button {
+                    shell.toggleInspector()
+                } label: {
+                    Label("显示检查器", systemImage: "sidebar.right")
+                }
+                .help("显示或隐藏检查器 (⌥⌘I)")
+
+                Button {
+                    shell.presentEditor()
+                } label: {
+                    Label("编辑", systemImage: "slider.horizontal.3")
+                }
+                .disabled(catalog.selectedAsset?.supportsEditing != true)
+                .help("编辑选中的 JPEG、HEIF 或 RAW 照片 (E)")
+
+                Menu {
+                    Button("复制调整") {
+                        if let asset = catalog.selectionAnchorAsset ?? catalog.selectedAsset {
+                            batch.copyAdjustments(from: asset, catalog: catalog)
+                            shell.announce("已复制调整配方。")
+                        }
+                    }
+                    .disabled(catalog.selectedAssetIDs.isEmpty)
+
+                    Button("粘贴调整") {
+                        if batch.pasteAdjustments(to: catalog.selectedAssetIDs, catalog: catalog) {
+                            shell.announce("已将调整应用到 \(catalog.selectedAssetIDs.count) 张照片。")
+                        }
+                    }
+                    .disabled(batch.copiedRecipe == nil || catalog.selectedAssetIDs.isEmpty)
+
+                    Button("同步调整") {
+                        if let anchor = catalog.selectionAnchorAsset,
+                           batch.syncAdjustments(from: anchor, to: catalog.selectedAssetIDs, catalog: catalog) {
+                            shell.announce("已从选中主照片同步调整。")
+                        }
+                    }
+                    .disabled(catalog.selectionAnchorAsset == nil || catalog.selectedAssetIDs.count < 2)
+
+                    Divider()
+
+                    Menu("批量导出") {
+                        ForEach(batch.presets) { preset in
+                            Button(preset.name) {
+                                startBatchExport(using: preset)
+                            }
+                        }
+                    }
+                    .disabled(catalog.selectedAssetIDs.isEmpty || batch.state == .running || batch.state == .cancelling)
+
+                    if batch.state == .running || batch.state == .cancelling {
+                        Button("取消批量导出") {
+                            batch.cancel()
+                            shell.announce("正在取消批量导出。")
+                        }
+                    }
+                } label: {
+                    Label("批处理", systemImage: "square.on.square")
+                }
+                .disabled(catalog.selectedAssetIDs.isEmpty)
+            }
+        }
+    }
+
+    private func startBatchExport(using preset: ExportPreset) {
+        let assets = catalog.selectedAssets.filter(\.supportsEditing)
+        batch.chooseDestinationAndStart(assets: assets, preset: preset) { asset in
+            catalog.renderRequest(for: asset, lut: luts.renderRecipe(for: catalog.recipe(for: asset)))
+        }
+    }
+}
+
+private struct SidebarView: View {
+    @Binding var selection: SidebarDestination
+
+    var body: some View {
+        List(selection: $selection) {
+            ForEach(SidebarGroup.allCases) { group in
+                Section(group.title) {
+                    ForEach(SidebarDestination.allCases.filter { $0.group == group }) { destination in
+                        Label(destination.title, systemImage: destination.systemImage)
+                            .tag(destination)
+                    }
+                }
+            }
+        }
+        .navigationTitle("PhotoAI Mac")
+        .listStyle(.sidebar)
+    }
+}
+
+private struct LibraryPlaceholderView: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var batch: BatchWorkflowStore
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(shell.selection.title)
+                        .font(.title2.bold())
+                    Text(description)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(countLabel)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+
+            if shell.selection == .applePhotos {
+                ApplePhotosLibraryView()
+            } else if shell.selection == .people {
+                PeopleLibraryView()
+            } else if shell.selection == .search {
+                SearchLibraryView()
+            } else if shell.selection == .cleanup {
+                CleanupLibraryView()
+            } else if shell.selection == .folders {
+                FolderSourceList()
+            } else if catalog.assets(for: shell.selection).isEmpty {
+                EmptyLibraryView()
+            } else {
+                CatalogAssetGrid(assets: catalog.assets(for: shell.selection))
+            }
+
+            Divider()
+
+            if let progress = batch.progressDescription {
+                HStack(spacing: 8) {
+                    if batch.state == .running || batch.state == .cancelling {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: batch.failures.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
+                            .foregroundStyle(batch.failures.isEmpty ? .green : .orange)
+                    }
+                    Text(progress)
+                        .font(.footnote)
+                    Spacer()
+                    if batch.state == .running || batch.state == .cancelling {
+                        Button("取消") { batch.cancel() }
+                            .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                Divider()
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.shield")
+                    .foregroundStyle(.secondary)
+                Text(shell.statusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+        }
+    }
+
+    private var description: String {
+        if shell.selection == .applePhotos {
+            return "独立于文件夹 Catalog；不会自动读取、下载或修改 Apple Photos 内容。"
+        }
+        return catalog.sources.isEmpty
+            ? "添加本地文件夹后，照片会在这里以缩略图网格显示。"
+            : "Catalog 已在本机建立索引，原始文件不会被复制或修改。"
+    }
+
+    private var countLabel: String {
+        if shell.selection == .applePhotos {
+            return "\(applePhotos.visibleAssets.count) 个 Apple Photos 项目"
+        }
+        return "\(catalog.assets(for: shell.selection).count) 张已索引"
+    }
+}
+
+private struct PeopleLibraryView: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var people: PeopleStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                TextField("搜索人物名称", text: $people.searchText)
+                    .textFieldStyle(.roundedBorder)
+
+                if isAnalyzing {
+                    Button("取消分析") { people.cancelAnalysis() }
+                } else {
+                    Button(people.status == .unprobed ? "检查人物服务" : "分析本地照片") {
+                        if case .unprobed = people.status {
+                            people.probeAvailability()
+                        } else if canAnalyze {
+                            people.startAnalysis(catalog: catalog)
+                        }
+                    }
+                    .disabled(isServiceUnavailable)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 10)
+
+            HStack {
+                Text(people.status.title)
+                    .font(.footnote)
+                    .foregroundStyle(statusColor)
+                Spacer()
+                Text("\(people.visiblePeople.count) 位人物")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            if people.visiblePeople.isEmpty {
+                ContentUnavailableView(
+                    "本地人物分组",
+                    systemImage: "person.2",
+                    description: Text("先检查 Media Intelligence 服务；分析只在本机运行。人物名称、隐藏与合并均保存为应用自己的记录。")
+                )
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {
+                        ForEach(people.visiblePeople) { person in
+                            PersonCard(person: person)
+                        }
+                    }
+                    .padding(24)
+                }
+            }
+
+            if let message = people.lastErrorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 10)
+            }
+        }
+        .task { people.probeAvailability() }
+    }
+
+    private var isServiceUnavailable: Bool {
+        if case .unavailable = people.status { return true }
+        return false
+    }
+
+    private var canAnalyze: Bool {
+        switch people.status {
+        case .ready, .complete: true
+        case .unprobed, .unavailable, .analyzing: false
+        }
+    }
+
+    private var isAnalyzing: Bool {
+        if case .analyzing = people.status { return true }
+        return false
+    }
+
+    private var statusColor: Color {
+        switch people.status {
+        case .ready, .complete: .green
+        case .unavailable: .orange
+        case .analyzing: .accentColor
+        case .unprobed: .secondary
+        }
+    }
+}
+
+private struct PersonCard: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var people: PeopleStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
+    let person: PersonRecord
+
+    private var samples: [DetectedFace] { people.representativeFaces(for: person) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PersonFaceStrip(faces: samples)
+                .frame(height: 142)
+
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(person.title)
+                        .font(.headline)
+                    Text("\(people.faceCount(for: person)) 张关联照片")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let face = samples.first, let asset = catalog.assets.first(where: { $0.id == face.assetID }) {
+                    Button("查看照片") {
+                        shell.select(.allPhotos)
+                        // 切换侧边栏时会清空旧选区；下一轮主线程再选中来源照片，确保用户能直接确认人物对应谁。
+                        DispatchQueue.main.async {
+                            catalog.select(assetID: asset.id, in: catalog.assets.map(\.id), modifiers: [])
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+            }
+
+            TextField("人物名称", text: Binding(
+                get: { person.displayName },
+                set: { people.rename(personID: person.id, to: $0) }
+            ))
+            .textFieldStyle(.roundedBorder)
+
+            if person.displayName.isEmpty {
+                Text("输入姓名以便后续搜索与合并。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Menu("合并到") {
+                    ForEach(people.visiblePeople.filter { $0.id != person.id }) { destination in
+                        Button(destination.title) {
+                            people.merge(personID: person.id, into: destination.id)
+                        }
+                    }
+                }
+                .disabled(people.visiblePeople.count < 2)
+
+                Spacer()
+
+                Button("隐藏", role: .destructive) {
+                    people.hide(personID: person.id)
+                }
+            }
+            .font(.footnote)
+        }
+        .padding(14)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct PersonFaceStrip: View {
+    let faces: [DetectedFace]
+
+    var body: some View {
+        Group {
+            if faces.isEmpty {
+                ContentUnavailableView("暂无可用人脸预览", systemImage: "person.crop.circle.badge.questionmark")
+            } else {
+                HStack(spacing: 6) {
+                    ForEach(faces) { face in
+                        PersonFacePreview(face: face)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .background(.tertiary, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct PersonFacePreview: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
+    let face: DetectedFace
+
+    var body: some View {
+        let request = catalog.assets.first(where: { $0.id == face.assetID }).flatMap(catalog.thumbnailRequest)
+        let thumbnail = request.flatMap(thumbnails.image(for:))
+
+        ZStack {
+            if let request, let thumbnail,
+               let preview = FacePreviewRenderer.preview(thumbnail: thumbnail, face: face, thumbnailCacheKey: request.cacheKey) {
+                Image(nsImage: preview)
+                    .resizable()
+                    .scaledToFill()
+            } else if request != nil {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "photo.badge.exclamationmark")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .clipped()
+        .onAppear {
+            if let request { thumbnails.load(request) }
+        }
+        .onChange(of: request?.cacheKey) { _, _ in
+            if let request { thumbnails.load(request) }
+        }
+        .accessibilityLabel("人物关联照片预览")
+    }
+}
+
+private struct SearchLibraryView: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var ocr: OCRIndexStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                TextField(
+                    "搜索文件名、相机、镜头、OCR 文字或结构化条件",
+                    text: Binding(get: { catalog.searchQuery }, set: catalog.setSearchQuery)
+                )
+                .textFieldStyle(.roundedBorder)
+
+                Button(catalog.isInterpretingSearch ? "正在解释…" : "解释自然语言") {
+                    Task { await catalog.interpretSearchWithFoundationModel() }
+                }
+                .disabled(catalog.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || catalog.isInterpretingSearch)
+
+                Button(ocr.state == .running ? "暂停 OCR" : "开始 / 继续 OCR") {
+                    if ocr.state == .running {
+                        ocr.pause()
+                    } else {
+                        ocr.start(catalog: catalog)
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 10)
+
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(catalog.searchInterpretation.explanation)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(ocr.progressDescription)
+                        .font(.footnote)
+                        .foregroundStyle(ocr.state == .paused ? Color.orange : Color.secondary)
+                }
+                Spacer()
+                Text("\(catalog.assets(for: .search).count) 个结果")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            if catalog.searchInterpretation.query.isEmpty {
+                ContentUnavailableView(
+                    "搜索本地图库",
+                    systemImage: "magnifyingglass",
+                    description: Text("例如：rating>=4 format:raw、camera:Sony、text:invoice、after:2026-01-01。")
+                )
+            } else if catalog.assets(for: .search).isEmpty {
+                ContentUnavailableView(
+                    "没有匹配结果",
+                    systemImage: "magnifyingglass",
+                    description: Text("条件按“且”组合；可修改关键词或清空结构化条件。")
+                )
+            } else {
+                CatalogAssetGrid(assets: catalog.assets(for: .search))
+            }
+        }
+    }
+}
+
+private struct ApplePhotosLibraryView: View {
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Picker("相簿", selection: $applePhotos.selectedAlbumID) {
+                    Text("全部照片").tag(String?.none)
+                    ForEach(applePhotos.albums) { album in
+                        Text("\(album.title)（\(album.estimatedAssetCount)）").tag(Optional(album.id))
+                    }
+                }
+                .frame(maxWidth: 320)
+
+                Toggle("仅收藏", isOn: $applePhotos.favoritesOnly)
+                    .toggleStyle(.checkbox)
+
+                Spacer()
+
+                Button(primaryButtonTitle) {
+                    applePhotos.requestAuthorizationAndLoad()
+                }
+                .disabled(!canRequestOrLoad)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 10)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(applePhotos.authorization.title)
+                    .font(.footnote)
+                    .foregroundStyle(authorizationColor)
+                Spacer()
+                Text(applePhotos.state.title)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            Group {
+                if !applePhotos.authorization.canRead {
+                    ContentUnavailableView(
+                        "Apple Photos 是可选数据源",
+                        systemImage: "photo.stack",
+                        description: Text("只有点击“授权并读取 Apple Photos”后才会请求权限。未授权、受限或拒绝时，文件夹 Catalog 不受影响。")
+                    )
+                } else if applePhotos.state == .loading || applePhotos.state == .requestingAuthorization {
+                    ProgressView("正在读取 Apple Photos 索引…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if applePhotos.visibleAssets.isEmpty {
+                    ContentUnavailableView(
+                        "尚未读取 Apple Photos",
+                        systemImage: "photo.stack",
+                        description: Text("选择相簿或“仅收藏”后点击读取；iCloud 项目不会因读取索引而自动下载。")
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(applePhotos.visibleAssets) { asset in
+                                HStack(spacing: 12) {
+                                    Image(systemName: asset.mediaKind == "视频" ? "video" : "photo")
+                                        .foregroundStyle(.tint)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(asset.filename)
+                                        Text(asset.createdAt?.formatted(date: .abbreviated, time: .shortened) ?? "日期未知")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if asset.isFavorite {
+                                        Image(systemName: "heart.fill")
+                                            .foregroundStyle(.red)
+                                    }
+                                    Text(asset.availability.title)
+                                        .font(.caption)
+                                        .foregroundStyle(asset.availability == .iCloudOnly ? Color.orange : Color.secondary)
+                                }
+                                .padding(.vertical, 6)
+                                Divider()
+                            }
+                        }
+                        .padding(.horizontal, 24)
+                    }
+                }
+            }
+
+            if case let .failed(message) = applePhotos.state {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 10)
+            }
+        }
+        .task { applePhotos.refreshAuthorizationStatus() }
+    }
+
+    private var primaryButtonTitle: String {
+        applePhotos.authorization.canRead ? "读取 Apple Photos" : "授权并读取 Apple Photos"
+    }
+
+    private var canRequestOrLoad: Bool {
+        switch applePhotos.authorization {
+        case .authorized, .limited, .notDetermined: true
+        case .denied, .restricted, .unavailable: false
+        }
+    }
+
+    private var authorizationColor: Color {
+        switch applePhotos.authorization {
+        case .authorized: .green
+        case .limited: .orange
+        case .notDetermined, .unavailable: .secondary
+        case .denied, .restricted: .red
+        }
+    }
+}
+
+private enum CleanupToolMode: String, CaseIterable, Identifiable {
+    case cleanup
+    case culling
+
+    var id: String { rawValue }
+    var title: String { self == .cleanup ? "清理建议" : "智能选片" }
+}
+
+private struct CleanupLibraryView: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var cleanup: CleanupWorkflowStore
+    @EnvironmentObject private var culling: CullingWorkflowStore
+    @State private var isTrashConfirmationPresented = false
+    @State private var mode: CleanupToolMode = .cleanup
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("工具", selection: $mode) {
+                ForEach(CleanupToolMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            if mode == .cleanup {
+                cleanupPane
+            } else {
+                CullingLibraryPane()
+            }
+        }
+        .confirmationDialog(
+            "将 \(cleanup.selectedCandidateAssetIDs.count) 个已选文件移到系统废纸篓？",
+            isPresented: $isTrashConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("移到废纸篓", role: .destructive) {
+                cleanup.moveSelectedToTrash(catalog: catalog)
+            }
+        } message: {
+            Text("此操作会移动你明确选中的原始文件；建议本身不会删除任何内容。失败项目会保留在图库并显示原因。")
+        }
+    }
+
+    private var cleanupPane: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                if cleanup.state == .analyzing {
+                    Button("取消分析") { cleanup.cancelAnalysis() }
+                } else {
+                    Button("分析本地图库") { cleanup.startAnalysis(catalog: catalog) }
+                        .disabled(catalog.assets.isEmpty)
+                }
+
+                Spacer()
+
+                Button(cleanup.isMovingToTrash ? "正在移到废纸篓…" : "移到废纸篓…", role: .destructive) {
+                    isTrashConfirmationPresented = true
+                }
+                .disabled(cleanup.selectedCandidateAssetIDs.isEmpty || cleanup.isMovingToTrash)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 10)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(cleanup.state.title)
+                    .font(.footnote)
+                    .foregroundStyle(stateColor)
+                Spacer()
+                Text("\(cleanup.recommendations.count) 条建议，已选择 \(cleanup.selectedCandidateAssetIDs.count) 项")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            Group {
+                if cleanup.state == .idle && cleanup.recommendations.isEmpty {
+                    ContentUnavailableView(
+                        "清理建议",
+                        systemImage: "sparkles",
+                        description: Text("分析仅在本机读取缩略版本和文件指纹，生成重复、相似、RAW/JPEG、截图与导出关联建议；不会自动删除文件。")
+                    )
+                } else if cleanup.state == .analyzing {
+                    ProgressView("正在生成本地清理建议…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if cleanup.recommendations.isEmpty {
+                    ContentUnavailableView(
+                        "没有可显示的建议",
+                        systemImage: "checkmark.circle",
+                        description: Text("分析完成后没有发现符合当前规则的项目；读取失败的文件会单独列出。")
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(cleanup.recommendations) { recommendation in
+                                CleanupRecommendationCard(recommendation: recommendation)
+                            }
+                        }
+                        .padding(24)
+                    }
+                }
+            }
+
+            if !cleanup.analysisFailures.isEmpty || !cleanup.trashFailures.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(cleanup.analysisFailures) { failure in
+                        Text("分析未完成：\(failure.message)")
+                    }
+                    ForEach(cleanup.trashFailures) { failure in
+                        Text("未移入废纸篓：\(failure.message)")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 10)
+            }
+        }
+    }
+
+    private var stateColor: Color {
+        switch cleanup.state {
+        case .complete: .green
+        case .failed: .red
+        case .analyzing: .accentColor
+        case .idle: .secondary
+        }
+    }
+}
+
+private struct CullingLibraryPane: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var culling: CullingWorkflowStore
+    @State private var isPickConfirmationPresented = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                if culling.state == .analyzing {
+                    Button("取消分析") { culling.cancelAnalysis() }
+                } else {
+                    Button("开始本地选片") { culling.startAnalysis(catalog: catalog) }
+                        .disabled(catalog.assets.isEmpty)
+                }
+                Spacer()
+                Button("确认标记为 Pick…") {
+                    isPickConfirmationPresented = true
+                }
+                .disabled(culling.selectedRecommendationIDs.isEmpty)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 10)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(culling.state.title)
+                    .font(.footnote)
+                    .foregroundStyle(stateColor)
+                Spacer()
+                Text("\(culling.recommendations.count) 个相似组，已选择 \(culling.selectedRecommendationIDs.count) 组")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            Group {
+                if culling.state == .idle && culling.recommendations.isEmpty {
+                    ContentUnavailableView(
+                        "智能选片建议",
+                        systemImage: "wand.and.stars",
+                        description: Text("仅在本机计算相似分组、缩略图清晰度和 Vision 人脸采集质量。它不会自动修改 Pick、Reject 或星级。")
+                    )
+                } else if culling.state == .analyzing {
+                    ProgressView("正在计算本地视觉信号…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if culling.recommendations.isEmpty {
+                    ContentUnavailableView(
+                        "没有相似组选片建议",
+                        systemImage: "checkmark.circle",
+                        description: Text("没有发现符合本地视觉相似阈值的图片；每一项分析失败都会单独提示。")
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(culling.recommendations) { recommendation in
+                                CullingRecommendationCard(recommendation: recommendation)
+                            }
+                        }
+                        .padding(24)
+                    }
+                }
+            }
+
+            if !culling.failures.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(culling.failures) { failure in
+                        Text("未完成分析：\(failure.message)")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 10)
+            }
+        }
+        .confirmationDialog(
+            "将每个所选相似组的推荐照片标记为 Pick？",
+            isPresented: $isPickConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("标记为 Pick") { culling.applyApprovedPicks(catalog: catalog) }
+        } message: {
+            Text("此操作只会把你确认的推荐照片标记为 Pick，不会自动修改星级或 Reject，也不会删除文件。")
+        }
+    }
+
+    private var stateColor: Color {
+        switch culling.state {
+        case .complete: .green
+        case .failed: .red
+        case .analyzing: .accentColor
+        case .idle: .secondary
+        }
+    }
+}
+
+private struct CullingRecommendationCard: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var culling: CullingWorkflowStore
+    let recommendation: CullingRecommendation
+
+    var body: some View {
+        let assetsByID = Dictionary(uniqueKeysWithValues: catalog.assets.map { ($0.id, $0) })
+        let recommendedName = assetsByID[recommendation.recommendedAssetID]?.filename ?? "推荐照片"
+        let selected = culling.selectedRecommendationIDs.contains(recommendation.id)
+
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "wand.and.stars")
+                .font(.title2)
+                .foregroundStyle(.tint)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("建议 Pick：\(recommendedName)")
+                    .font(.headline)
+                Text(recommendation.reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(recommendation.assetIDs.compactMap { assetsByID[$0]?.filename }.joined(separator: "  ·  "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 12)
+            Button(selected ? "取消选择" : "选择建议") {
+                culling.toggleSelection(recommendation.id)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(14)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct CleanupRecommendationCard: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var cleanup: CleanupWorkflowStore
+    let recommendation: CleanupRecommendation
+
+    var body: some View {
+        let relatedAssets = catalog.assets.filter { recommendation.assetIDs.contains($0.id) }
+        let candidates = Set(recommendation.candidateAssetIDs)
+        let allCandidatesSelected = !candidates.isEmpty && candidates.isSubset(of: cleanup.selectedCandidateAssetIDs)
+
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: recommendation.kind.systemImage)
+                .font(.title2)
+                .foregroundStyle(.tint)
+                .frame(width: 30)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(recommendation.kind.title)
+                    .font(.headline)
+                Text(recommendation.explanation)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(relatedAssets.map(\.filename).joined(separator: "  ·  "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            if !candidates.isEmpty {
+                Button(allCandidatesSelected ? "取消选择" : "选择建议项") {
+                    cleanup.toggleCandidates(for: recommendation)
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Text("仅关联")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct EmptyLibraryView: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(shell.selection.title, systemImage: shell.selection.systemImage)
+        } description: {
+            if catalog.sources.isEmpty {
+                Text("添加本地文件夹以建立只读索引。")
+            } else {
+                Text("当前筛选条件下没有匹配的照片。")
+            }
+        } actions: {
+            if catalog.sources.isEmpty {
+                Button("添加照片文件夹…") {
+                    catalog.chooseAndAddFolder()
+                }
+            }
+        }
+    }
+}
+
+private struct CatalogAssetGrid: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+
+    let assets: [PhotoAsset]
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: shell.gridDensity.minimumThumbnailWidth), spacing: 14)],
+                spacing: 14
+            ) {
+                ForEach(assets) { asset in
+                    CatalogAssetCell(asset: asset, orderedAssetIDs: assets.map(\.id))
+                }
+            }
+            .padding(24)
+        }
+    }
+}
+
+private struct CatalogAssetCell: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
+
+    let asset: PhotoAsset
+    let orderedAssetIDs: [UUID]
+
+    var body: some View {
+        let request = catalog.thumbnailRequest(for: asset)
+        let image = request.flatMap(thumbnails.image(for:))
+        let isSelected = catalog.selectedAssetIDs.contains(asset.id)
+        let hasFinishedLoading = request.map { thumbnails.completedKeys.contains($0.cacheKey) } ?? true
+
+        Button {
+            catalog.select(assetID: asset.id, in: orderedAssetIDs)
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.quaternary)
+
+                    if let image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.medium)
+                            .aspectRatio(contentMode: .fill)
+                    } else if asset.mediaType == .video || hasFinishedLoading {
+                        Image(systemName: asset.systemImage)
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                .aspectRatio(4 / 3, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topLeading) {
+                    if asset.rating > 0 {
+                        Text(String(repeating: "★", count: asset.rating))
+                            .font(.caption2)
+                            .foregroundStyle(.yellow)
+                            .padding(5)
+                            .background(.black.opacity(0.45), in: Capsule())
+                            .padding(6)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if asset.flag != .none {
+                        Image(systemName: asset.flag == .pick ? "flag.fill" : "xmark.circle.fill")
+                            .foregroundStyle(asset.flag == .pick ? .green : .red)
+                            .padding(7)
+                    }
+                }
+
+                Text(asset.filename)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(asset.metadataSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(5)
+            .background(isSelected ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+            }
+        }
+        .buttonStyle(.plain)
+        .onAppear {
+            if let request {
+                thumbnails.load(request)
+            }
+        }
+        .onChange(of: request?.cacheKey) { _, _ in
+            if let request {
+                thumbnails.load(request)
+            }
+        }
+        .accessibilityLabel("\(asset.filename)，\(asset.metadataSummary)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct FolderSourceList: View {
+    @EnvironmentObject private var catalog: CatalogStore
+
+    var body: some View {
+        Group {
+            if catalog.sources.isEmpty {
+                ContentUnavailableView {
+                    Label("没有文件夹来源", systemImage: "folder.badge.plus")
+                } description: {
+                    Text("添加本地文件夹后，PhotoAI Mac 会保存安全书签并建立只读索引。")
+                } actions: {
+                    Button("添加照片文件夹…") {
+                        catalog.chooseAndAddFolder()
+                    }
+                }
+            } else {
+                List(catalog.sources) { source in
+                    HStack(spacing: 12) {
+                        Image(systemName: source.status.systemImage)
+                            .foregroundStyle(source.status.tint)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(source.displayName)
+                                .fontWeight(.medium)
+                            Text(source.lastKnownPath)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text(source.status.title)
+                            if source.status == .scanning {
+                                Text("正在后台扫描…")
+                            } else {
+                                Text("\(source.assetCount) 张")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                        Button("重新扫描") {
+                            catalog.startRescan(source.id)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
+}
+
+private struct InspectorView: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+
+    var body: some View {
+        Form {
+            Section("检查器") {
+                LabeledContent("当前视图", value: shell.selection.title)
+                LabeledContent("选中项目", value: selectionSummary)
+                LabeledContent("来源", value: "\(catalog.sources.count) 个")
+            }
+
+            if let asset = catalog.selectedAsset {
+                Section("元数据") {
+                    LabeledContent("文件名", value: asset.filename)
+                    LabeledContent("尺寸", value: asset.displayDimensions)
+                    LabeledContent("格式", value: asset.rawType ?? asset.fileExtension.uppercased())
+                    LabeledContent("相机", value: asset.cameraModel ?? "—")
+                    LabeledContent("镜头", value: asset.lens ?? "—")
+                    LabeledContent("ISO", value: asset.iso.map(String.init) ?? "—")
+                    LabeledContent("光圈", value: asset.aperture ?? "—")
+                    LabeledContent("焦距", value: asset.focalLength ?? "—")
+                }
+
+                Section("筛选") {
+                    HStack {
+                        Text("评分")
+                        Spacer()
+                        Text(asset.rating == 0 ? "未评分" : String(repeating: "★", count: asset.rating))
+                            .foregroundStyle(asset.rating == 0 ? Color.secondary : Color.yellow)
+                    }
+                    LabeledContent("标记", value: asset.flag.title)
+                    LabeledContent("收藏", value: asset.isFavorite ? "是" : "否")
+                }
+            } else if !catalog.selectedAssetIDs.isEmpty {
+                Section("筛选") {
+                    Text("已选择 \(catalog.selectedAssetIDs.count) 张照片，可使用快捷键批量评分或标记。")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Section("元数据") {
+                    Text("选择一张照片以查看 EXIF、评分与筛选状态。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var selectionSummary: String {
+        switch catalog.selectedAssetIDs.count {
+        case 0: "无"
+        case 1: "1 张"
+        default: "\(catalog.selectedAssetIDs.count) 张"
+        }
+    }
+}
+
+extension PhotoAsset {
+    var systemImage: String {
+        mediaType == .video ? "video" : (isRAW ? "camera.aperture" : "photo")
+    }
+
+    var metadataSummary: String {
+        let type = isRAW ? rawType ?? "RAW" : fileExtension.uppercased()
+        return [type, displayDimensions].joined(separator: " · ")
+    }
+
+}
+
+private extension PhotoFlag {
+    var title: String {
+        switch self {
+        case .none: "无"
+        case .pick: "Pick"
+        case .reject: "Reject"
+        }
+    }
+}
+
+private extension PhotoSourceStatus {
+    var systemImage: String {
+        switch self {
+        case .ready: "folder.fill"
+        case .scanning: "arrow.triangle.2.circlepath"
+        case .missing: "folder.badge.questionmark"
+        case .inaccessible: "folder.badge.exclamationmark"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .ready: .accentColor
+        case .scanning: .orange
+        case .missing, .inaccessible: .red
+        }
+    }
+}
