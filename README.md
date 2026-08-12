@@ -11,10 +11,10 @@ Phase 14 将图库扩展为长期本地归档：原始来源离线后，历史�
 ```sh
 swift build
 swift test
-swift run PhotoAIMac
+scripts/run-app.sh
 ```
 
-若需以本地 `.app` bundle 形式进行 UI 验收，可将 `Resources/Info.plist`、`Resources/PhotoAI-Mac.icns` 与 `.build/debug/PhotoAIMac` 分别放入 `PhotoAI-Mac.app/Contents/`、`PhotoAI-Mac.app/Contents/Resources/` 与 `PhotoAI-Mac.app/Contents/MacOS/` 后用 Finder 打开。该调试 bundle 不会写入仓库。
+`scripts/run-app.sh` 会构建并打开 `.build/out/Products/Debug/PhotoAI-Mac.app`，并封装 `Info.plist`、`.icns` 与 SwiftPM 的资源 bundle，确保开发启动也采用应用图标和侧边栏标志。`swift run PhotoAIMac` 只运行裸可执行文件，不会使用 `.icns` bundle 图标。
 
 ## 品牌资源
 

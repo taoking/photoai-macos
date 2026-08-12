@@ -10,6 +10,7 @@
 - [x] 生成 macOS `.icns` 应用图标，并配置到调试 App bundle。
 - [x] 在应用侧边栏使用同一品牌标志。
 - [x] 执行构建和自动化回归验证。
+- [x] 修复开发启动路径未使用 App bundle 导致 Dock 图标缺失的问题。
 
 ## 已完成阶段：Phase 14 — Hardening / Draft PR under review
 
