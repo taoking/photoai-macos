@@ -77,6 +77,46 @@ struct CatalogTests {
     }
 
     @Test
+    func catalogMergeHandlesFiftyThousandAssets() {
+        let sourceID = UUID()
+        let otherSourceID = UUID()
+        var existing = (0..<50_000).map { index in
+            makeSyntheticAsset(sourceID: sourceID, index: index)
+        }
+        let preserved = existing[12_345]
+        existing[12_345].rating = 5
+        existing[12_345].flag = .pick
+        existing[12_345].isFavorite = true
+        existing[12_345].editRecipe = EditRecipe(exposure: 0.75)
+        existing[12_345].ocrText = "保留的 OCR"
+        existing.append(makeSyntheticAsset(sourceID: otherSourceID, index: 1))
+
+        // 49,000 项复扫：1,000 个历史缺失项，另加入 500 个新项。
+        var scanned = (0..<49_000).map { index in
+            makeSyntheticAsset(sourceID: sourceID, index: index, id: UUID())
+        }
+        scanned.append(contentsOf: (50_000..<50_500).map { index in
+            makeSyntheticAsset(sourceID: sourceID, index: index)
+        })
+
+        let merged = CatalogMerge.merging(existingAssets: existing, scannedAssets: scanned, sourceID: sourceID)
+        let bySourceAndPath = Dictionary(uniqueKeysWithValues: merged.map { ("\($0.sourceID.uuidString)|\($0.relativePath)", $0) })
+        let restored = try! #require(bySourceAndPath["\(sourceID.uuidString)|synthetic/12345.jpg"])
+
+        #expect(merged.count == 50_501)
+        #expect(Set(merged.map(\.id)).count == merged.count)
+        #expect(restored.id == preserved.id)
+        #expect(restored.rating == 5)
+        #expect(restored.flag == .pick)
+        #expect(restored.isFavorite)
+        #expect(restored.editRecipe == EditRecipe(exposure: 0.75))
+        #expect(restored.ocrText == "保留的 OCR")
+        #expect(bySourceAndPath["\(sourceID.uuidString)|synthetic/49500.jpg"]?.id == existing[49_500].id)
+        #expect(bySourceAndPath["\(sourceID.uuidString)|synthetic/50010.jpg"] != nil)
+        #expect(merged.contains(where: { $0.sourceID == otherSourceID }))
+    }
+
+    @Test
     @MainActor
     func marksUnresolvableSourceAsMissing() async throws {
         let rootURL = try makeTemporaryDirectory()
@@ -195,6 +235,33 @@ struct CatalogTests {
             iso: nil,
             mediaType: .image,
             rawType: fileExtension.lowercased() == "dng" ? "DNG" : nil,
+            rating: 0,
+            flag: .none,
+            isFavorite: false
+        )
+    }
+
+    private func makeSyntheticAsset(sourceID: UUID, index: Int, id: UUID = UUID()) -> PhotoAsset {
+        PhotoAsset(
+            id: id,
+            sourceID: sourceID,
+            relativePath: "synthetic/\(index).jpg",
+            filename: "\(index).jpg",
+            fileExtension: "jpg",
+            fileSize: Int64(index + 1),
+            modifiedAt: Date(timeIntervalSinceReferenceDate: Double(index)),
+            captureDate: nil,
+            width: nil,
+            height: nil,
+            cameraMake: nil,
+            cameraModel: nil,
+            lens: nil,
+            focalLength: nil,
+            aperture: nil,
+            shutterSpeed: nil,
+            iso: nil,
+            mediaType: .image,
+            rawType: nil,
             rating: 0,
             flag: .none,
             isFavorite: false

@@ -7,6 +7,7 @@ struct AppShellView: View {
     @EnvironmentObject private var luts: LUTStore
     @EnvironmentObject private var batch: BatchWorkflowStore
     @EnvironmentObject private var cleanup: CleanupWorkflowStore
+    @EnvironmentObject private var archive: ArchiveCoordinator
 
     var body: some View {
         NavigationSplitView {
@@ -30,6 +31,10 @@ struct AppShellView: View {
         .onChange(of: shell.selection) { _, _ in
             catalog.clearSelection()
         }
+        .task { archive.start(catalog: catalog) }
+        .onChange(of: catalog.archiveEnqueueRevision) { _, _ in
+            archive.enqueue(catalog.takeScheduledArchiveProcessingRequests(), catalog: catalog)
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
@@ -39,6 +44,15 @@ struct AppShellView: View {
                     Button("重新扫描当前来源") {
                         catalog.startRescanAll()
                         shell.announce("正在重新扫描本地来源。")
+                    }
+                    Button(archive.progress.state == .running ? "暂停归档索引" : "建立离线归档") {
+                        if archive.progress.state == .running {
+                            archive.pause()
+                        } else if archive.progress.state == .paused {
+                            archive.resume(catalog: catalog)
+                        } else {
+                            archive.start(catalog: catalog)
+                        }
                     }
                 } label: {
                     Label("添加来源", systemImage: "plus")
@@ -70,7 +84,7 @@ struct AppShellView: View {
                 } label: {
                     Label("编辑", systemImage: "slider.horizontal.3")
                 }
-                .disabled(catalog.selectedAsset?.supportsEditing != true)
+                .disabled(catalog.selectedAsset.map(catalog.canEdit) != true)
                 .help("编辑选中的 JPEG、HEIF 或 RAW 照片 (E)")
 
                 Menu {
@@ -123,7 +137,7 @@ struct AppShellView: View {
     }
 
     private func startBatchExport(using preset: ExportPreset) {
-        let assets = catalog.selectedAssets.filter(\.supportsEditing)
+        let assets = catalog.selectedAssets.filter(catalog.canEdit)
         batch.chooseDestinationAndStart(assets: assets, preset: preset) { asset in
             catalog.renderRequest(for: asset, lut: luts.renderRecipe(for: catalog.recipe(for: asset)))
         }
@@ -135,6 +149,24 @@ private struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("PhotoAI Mac")
+                            .font(.headline)
+                        Text("本地照片工作台")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    PhotoAIBrandMark()
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("PhotoAI Mac，本地照片工作台")
+                .listRowSeparator(.hidden)
+                .allowsHitTesting(false)
+            }
+
             ForEach(SidebarGroup.allCases) { group in
                 Section(group.title) {
                     ForEach(SidebarDestination.allCases.filter { $0.group == group }) { destination in
@@ -149,11 +181,24 @@ private struct SidebarView: View {
     }
 }
 
+private struct PhotoAIBrandMark: View {
+    var body: some View {
+        Image("PhotoAI-Logo", bundle: .module)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: 30, height: 30)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .accessibilityHidden(true)
+    }
+}
+
 private struct LibraryPlaceholderView: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var batch: BatchWorkflowStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
+    @EnvironmentObject private var archive: ArchiveCoordinator
 
     var body: some View {
         VStack(spacing: 0) {
@@ -184,6 +229,8 @@ private struct LibraryPlaceholderView: View {
                 CleanupLibraryView()
             } else if shell.selection == .folders {
                 FolderSourceList()
+            } else if shell.selection == .archive {
+                ArchiveLibraryView()
             } else if catalog.assets(for: shell.selection).isEmpty {
                 EmptyLibraryView()
             } else {
@@ -214,6 +261,28 @@ private struct LibraryPlaceholderView: View {
                 Divider()
             }
 
+            if shell.selection != .archive, archive.progress.state != .idle {
+                HStack(spacing: 8) {
+                    if archive.progress.state == .running {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: archive.progress.state == .complete ? "checkmark.circle" : "pause.circle")
+                            .foregroundStyle(archive.progress.state == .complete ? .green : .orange)
+                    }
+                    Text(archive.progress.description)
+                        .font(.footnote)
+                    Spacer()
+                    if archive.progress.state == .running {
+                        Button("暂停") { archive.pause() }.controlSize(.small)
+                    } else if archive.progress.state == .paused {
+                        Button("继续") { archive.resume(catalog: catalog) }.controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                Divider()
+            }
+
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.shield")
                     .foregroundStyle(.secondary)
@@ -231,6 +300,9 @@ private struct LibraryPlaceholderView: View {
         if shell.selection == .applePhotos {
             return "独立于文件夹 Catalog；不会自动读取、下载或修改 Apple Photos 内容。"
         }
+        if shell.selection == .archive {
+            return "长期保存本地元数据、指纹与离线预览；它不是原始照片备份。"
+        }
         return catalog.sources.isEmpty
             ? "添加本地文件夹后，照片会在这里以缩略图网格显示。"
             : "Catalog 已在本机建立索引，原始文件不会被复制或修改。"
@@ -239,6 +311,9 @@ private struct LibraryPlaceholderView: View {
     private var countLabel: String {
         if shell.selection == .applePhotos {
             return "\(applePhotos.visibleAssets.count) 个 Apple Photos 项目"
+        }
+        if shell.selection == .archive {
+            return "\(catalog.assets.count) 张历史资产"
         }
         return "\(catalog.assets(for: shell.selection).count) 张已索引"
     }
@@ -1069,7 +1144,11 @@ private struct CatalogAssetCell: View {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if asset.flag != .none {
+                    if !catalog.isOriginalAvailable(for: asset) {
+                        Image(systemName: "externaldrive.badge.exclamationmark")
+                            .foregroundStyle(.orange)
+                            .padding(7)
+                    } else if asset.flag != .none {
                         Image(systemName: asset.flag == .pick ? "flag.fill" : "xmark.circle.fill")
                             .foregroundStyle(asset.flag == .pick ? .green : .red)
                             .padding(7)
@@ -1161,6 +1240,134 @@ private struct FolderSourceList: View {
     }
 }
 
+private struct ArchiveLibraryView: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var archive: ArchiveCoordinator
+    @State private var filter: ArchiveHistoryFilter = .all
+    @State private var isClearConfirmationPresented = false
+
+    private var visibleAssets: [PhotoAsset] {
+        catalog.assets.filter { asset in
+            switch filter {
+            case .all: true
+            case .online: catalog.archiveAvailability(for: asset) == .online
+            case .offline: catalog.archiveAvailability(for: asset) == .offline
+            case .missing: catalog.archiveAvailability(for: asset) == .missing
+            case .multipleCopies: catalog.archiveAvailability(for: asset) == .multipleCopies
+            case .exactDuplicates: catalog.hasExactDuplicate(for: asset)
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Picker("归档筛选", selection: $filter) {
+                    ForEach(ArchiveHistoryFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                if archive.progress.state == .running {
+                    Button("暂停归档索引") { archive.pause() }
+                } else if archive.progress.state == .paused {
+                    Button("继续归档索引") { archive.resume(catalog: catalog) }
+                } else {
+                    Button("建立离线归档") { archive.start(catalog: catalog) }
+                }
+
+                Spacer()
+
+                Button("删除离线预览…", role: .destructive) {
+                    isClearConfirmationPresented = true
+                }
+                .disabled(catalog.archivePreviewCacheStatistics().assetCount == 0)
+
+                Button("重新建立离线预览") {
+                    archive.rebuildOfflinePreviews(catalog: catalog)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 10)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(archive.progress.description)
+                        .font(.footnote)
+                        .foregroundStyle(archive.progress.state == .complete ? .green : .secondary)
+                    let cache = catalog.archivePreviewCacheStatistics()
+                    Text("离线预览 \(cache.assetCount) 张，\(ByteCountFormatter.string(fromByteCount: cache.byteSize, countStyle: .file))。离线预览不是原图备份。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                let summary = catalog.lastArchiveImportSummary
+                if summary.scannedCount > 0 {
+                    Text("上次扫描：新照片 \(summary.newAssetCount) · 已索引 \(summary.sameIndexedFileCount) · 完全重复 \(summary.exactDuplicateCount) · 疑似相似 \(summary.possibleVisualDuplicateCount)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            if visibleAssets.isEmpty {
+                ContentUnavailableView(
+                    "没有匹配的归档资产",
+                    systemImage: "archivebox",
+                    description: Text("建立离线归档后，即使原始来源离线，已生成的预览仍会保留在本机。")
+                )
+            } else {
+                CatalogAssetGrid(assets: visibleAssets)
+            }
+
+            if let message = archive.lastErrorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
+            }
+        }
+        .confirmationDialog(
+            "删除所有离线预览？",
+            isPresented: $isClearConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("删除离线预览", role: .destructive) {
+                Task { await archive.clearOfflinePreviews(catalog: catalog) }
+            }
+        } message: {
+            Text("只会删除本机生成的离线预览，不会删除原始照片、Catalog、哈希、人物记录或编辑配方。")
+        }
+    }
+}
+
+private enum ArchiveHistoryFilter: String, CaseIterable, Identifiable {
+    case all
+    case online
+    case offline
+    case missing
+    case multipleCopies
+    case exactDuplicates
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .online: "原始文件可用"
+        case .offline: "离线"
+        case .missing: "缺失"
+        case .multipleCopies: "多个副本"
+        case .exactDuplicates: "完全重复"
+        }
+    }
+}
+
 private struct InspectorView: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
@@ -1183,6 +1390,38 @@ private struct InspectorView: View {
                     LabeledContent("ISO", value: asset.iso.map(String.init) ?? "—")
                     LabeledContent("光圈", value: asset.aperture ?? "—")
                     LabeledContent("焦距", value: asset.focalLength ?? "—")
+                }
+
+                Section("归档") {
+                    let availability = catalog.archiveAvailability(for: asset)
+                    LabeledContent("状态", value: availability.title)
+                    let metadata = catalog.archiveMetadata(for: asset)
+                    LabeledContent("Hash", value: metadata.hashState.title)
+                    if let hashUpdatedAt = metadata.hashUpdatedAt {
+                        LabeledContent("Hash 更新时间", value: hashUpdatedAt.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let preview = metadata.preview {
+                        LabeledContent("离线预览", value: "\(preview.width) × \(preview.height) · \(ByteCountFormatter.string(fromByteCount: preview.byteSize, countStyle: .file))")
+                    } else {
+                        LabeledContent("离线预览", value: "尚未生成")
+                    }
+                    if let location = catalog.archiveOriginalLocation(for: asset) {
+                        LabeledContent("原始来源", value: location.volumeName ?? "—")
+                        LabeledContent("原始路径", value: location.relativePath)
+                        LabeledContent("最后发现", value: location.lastSeenAt.formatted(date: .abbreviated, time: .shortened))
+                        if !catalog.isOriginalAvailable(for: asset) {
+                            Button("重新关联来源…") { catalog.chooseAndRelinkSource(for: location.sourceID) }
+                        }
+                    }
+                    if let copy = catalog.archiveAvailableCopyLocation(for: asset) {
+                        LabeledContent("可用副本", value: "\(copy.volumeName ?? "—") / \(copy.relativePath)")
+                        Button("在 Finder 中显示可用副本") { catalog.revealArchiveCopy(copy) }
+                    }
+                    if !catalog.isOriginalAvailable(for: asset) {
+                        Text("离线预览用于辨认照片，不是原图备份；重新连接原始来源后才可编辑或导出。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("筛选") {

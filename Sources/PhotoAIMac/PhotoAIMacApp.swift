@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -14,6 +15,12 @@ struct PhotoAIMacApp: App {
     @StateObject private var ocr = OCRIndexStore()
     @StateObject private var people = PeopleStore()
     @StateObject private var applePhotos = ApplePhotosStore()
+    @StateObject private var archive: ArchiveCoordinator
+
+    init() {
+        let catalogURL = CatalogPersistence.defaultFileURL
+        _archive = StateObject(wrappedValue: ArchiveCoordinator(catalogURL: catalogURL))
+    }
 
     var body: some Scene {
         WindowGroup("PhotoAI Mac") {
@@ -30,6 +37,10 @@ struct PhotoAIMacApp: App {
                 .environmentObject(ocr)
                 .environmentObject(people)
                 .environmentObject(applePhotos)
+                .environmentObject(archive)
+                .task {
+                    configureApplicationIcon()
+                }
         }
         .defaultSize(width: 1_360, height: 860)
         .commands {
@@ -43,6 +54,14 @@ struct PhotoAIMacApp: App {
                 .environmentObject(thumbnails)
                 .environmentObject(luts)
                 .environmentObject(batch)
+                .environmentObject(archive)
         }
+    }
+
+    @MainActor
+    private func configureApplicationIcon() {
+        guard let iconURL = Bundle.module.url(forResource: "PhotoAI-Logo", withExtension: "png"),
+              let icon = NSImage(contentsOf: iconURL) else { return }
+        NSApplication.shared.applicationIconImage = icon
     }
 }

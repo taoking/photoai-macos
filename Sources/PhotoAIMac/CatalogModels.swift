@@ -55,7 +55,6 @@ struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
     var editRecipe: EditRecipe? = nil
     /// `nil` means the asset has not been indexed for OCR yet; an empty string is an indexed image with no recognized text.
     var ocrText: String? = nil
-
     var displayDimensions: String {
         guard let width, let height else { return "—" }
         return "\(width) × \(height)"
@@ -64,6 +63,7 @@ struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
     var isRAW: Bool { rawType != nil }
 
     var identityKey: String { "\(sourceID.uuidString)/\(relativePath)" }
+
 }
 
 struct EditRecipe: Codable, Hashable, Sendable {
@@ -193,7 +193,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
 }
 
 struct CatalogSnapshot: Codable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     var sources: [PhotoSource]
@@ -233,6 +233,11 @@ struct CatalogSnapshot: Codable, Sendable {
                 }
             }
             schemaVersion = 2
+        }
+        if schemaVersion < 3 {
+            // Hash、位置与预览元数据保存在独立 SQLite 索引；JSON 快照保留用户编辑字段，
+            // 因而可安全回滚且不会在迁移时丢失评分、OCR、配方或人物关联。
+            schemaVersion = 3
         }
         if schemaVersion > CatalogSnapshot.currentSchemaVersion {
             // 前向版本保留字段能继续读取；当前 App 只维护自己已知的数据。

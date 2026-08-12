@@ -29,6 +29,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("3", modifiers: .command)
             Button("RAW") { shell.select(.raw) }
                 .keyboardShortcut("4", modifiers: .command)
+            Button("图库归档") { shell.select(.archive) }
+                .keyboardShortcut("5", modifiers: .command)
         }
 
         CommandMenu("显示") {
@@ -52,7 +54,7 @@ struct AppCommands: Commands {
                 shell.presentEditor()
             }
             .keyboardShortcut("e", modifiers: [])
-            .disabled(catalog.selectedAsset?.supportsEditing != true)
+            .disabled(catalog.selectedAsset.map(catalog.canEdit) != true)
 
             Button("导入 .cube LUT…") {
                 luts.chooseAndImport()
@@ -157,7 +159,7 @@ struct AppCommands: Commands {
     }
 
     private func startBatchExport(using preset: ExportPreset) {
-        let assets = catalog.selectedAssets.filter(\.supportsEditing)
+        let assets = catalog.selectedAssets.filter(catalog.canEdit)
         batch.chooseDestinationAndStart(assets: assets, preset: preset) { asset in
             catalog.renderRequest(for: asset, lut: luts.renderRecipe(for: catalog.recipe(for: asset)))
         }

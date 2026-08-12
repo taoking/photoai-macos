@@ -2,7 +2,17 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 12.5 — Catalog Identity & Scale Hardening
+## 当前阶段：Phase 15 — Brand Identity
+
+### Phase 15 — Brand Identity（已完成）
+
+- [x] 设计 PhotoAI Mac 的原创摄影 / AI 标志。
+- [x] 生成 macOS `.icns` 应用图标，并配置到调试 App bundle。
+- [x] 在应用侧边栏使用同一品牌标志。
+- [x] 执行构建和自动化回归验证。
+- [x] 修复开发启动路径未使用 App bundle 导致 Dock 图标缺失的问题。
+
+## 已完成阶段：Phase 14 — Hardening / Draft PR under review
 
 ### Phase 0 — SDK / Reuse Spike（已完成）
 
@@ -109,6 +119,20 @@
 - [ ] 确定开源许可证（法律/授权选择）。
 - [x] 已初始化 Git、创建公开 `taoking/photoai-macos` 并推送 `main`；release tag 与 PR 不在本次范围。
 - [ ] 在已确定版本号与许可证后生成 unsigned `.app.zip`、SHA-256 与 BUILD-INFO。
+
+### Phase 14 — Library Archive & Duplicate Import Guard（Hardening / Draft PR 待审）
+
+- [x] 评估 JSON Catalog 的高频归档写入成本；保留 JSON 为用户状态恢复基线，并以 SQLite 保存哈希、位置、预览元数据和重复关系。
+- [x] 增加长期历史资产、物理位置、卷/文件资源标识、SHA-256、视觉指纹和状态模型；同一来源重扫复用稳定资产身份。
+- [x] 增加持久离线预览（1280 px 长边、自适应 JPEG Quality）、两项受限并发后台队列、暂停/续跑与重启后对未完成项目的安全恢复。
+- [x] 增加 Archive / History 入口、离线/缺失/多个副本/完全重复筛选、扫描摘要、来源检查器与重新关联入口。
+- [x] 将原图不可用时的 Grid/人物缩略图回退到离线预览，禁用编辑与原图导出，并清楚标明预览不是备份。
+- [x] 覆盖哈希持久化与失效、跨来源精确重复、离线/重新关联、历史保留、迁移备份、取消/续跑和 10k/50k SQLite 索引查找。
+- [x] 修复 50k 来源扫描、归档队列、预览状态、记录清理、离线模块行为与 SQLite/JSON 职责边界。
+- [x] 消除 50k Catalog merge 嵌套扫描，补充稳定 ID / 用户状态 / 历史资产的 50k 纯模型回归。
+- [x] 防止迟到 worker 在显式删除后复活 SQLite 归档记录，并清理被丢弃结果的预览文件。
+- [x] Archive DB 不可用时显式删除 Fail Closed；完全重复筛选使用 O(1) runtime 索引。
+- [x] 完成 Hardening 全量验证、文档、现有 Draft PR 更新后停止。
 
 ## Phase 0 验证结果
 
