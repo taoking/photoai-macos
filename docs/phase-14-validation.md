@@ -54,15 +54,16 @@
 - 纯元数据 10,000 和 50,000 行场景通过 `archive_assets.exact_hash` SQLite 索引查询精确重复，不需要遍历完整 Catalog。
 - 50,000 条 `recordScan()` 先以单个来源 UPDATE 标记旧位置不可用，再逐条 UPSERT 已扫描路径；验证没有巨型 `NOT IN` 绑定、扫描路径恢复可用、137 条缺失路径仍不可用，并验证扫描摘要。
 - 50,000 条合成请求在归档队列中只入队/出队一次；暂停后的重新入队不会重复项目，且没有触发全 Catalog 请求生成。
+- 50,000 条资产/位置与精确重复关系加载后，Archive 可用性、原始位置和可用副本都经预构建字典直接读取，不对每个 Archive 网格单元重复筛选全部数组。
 - `evicted`、`unsupported` 与 `retryableFailure` 预览状态不会在启动时无限自动重试；“重新建立离线预览”只恢复 `evicted` 与 `retryableFailure`，不重算已完成哈希；清理进行中的归档任务后，最终状态确定为 `evicted`。
-- OCR、人物分析、清理和智能选片仅接收原始文件实际可用的资产；离线人物卡仍可显示既有本地预览。
+- OCR、人物分析、清理、智能选片、批量导出、编辑与渲染共用 `availableAssets` / `isOriginalAvailable` 口径；离线人物卡仍可显示既有本地预览。
 
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 2026-08-13 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test --filter ArchiveWorkflowTests` | 2026-08-13 通过，16 tests / 1 suite（含真实 50k `recordScan()`、50k 队列和清理并发测试）。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 2026-08-13 通过，69 tests / 16 suites；真实 Sony ARW 由既有显式开关报告 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | 2026-08-13 `TEST SUCCEEDED`，69 tests / 16 suites；同一真实 RAW 测试明确 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test --filter ArchiveWorkflowTests` | 2026-08-13 通过，19 tests / 1 suite（含真实 50k `recordScan()`、50k 队列、50k 可用性索引和清理并发测试）。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 2026-08-13 通过，72 tests / 16 suites；真实 Sony ARW 由既有显式开关报告 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | 2026-08-13 `TEST SUCCEEDED`，72 tests / 16 suites；同一真实 RAW 测试明确 `SKIPPED`。 |
 
 Xcode 日志仍有既有、已被测试隔离的系统/测试环境提示：损坏缩略图测试的 ImageIO 解码错误、Vision OCR E5 模型路径提示，以及大内存 JPEG 取消测试触发的 IOSurface 日志；均未导致测试失败。本记录不把本机测试目录的移动/重新关联表述为真实可移动磁盘硬件验收。
 

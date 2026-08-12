@@ -426,6 +426,75 @@ struct ArchiveWorkflowTests {
         #expect(store.assets.allSatisfy { store.archiveMetadata(for: $0).previewState == .evicted })
     }
 
+    @Test
+    @MainActor
+    func explicitPreviewRebuildRestoresEvictedPreviewWithoutRehashing() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+        try writeJPEG(to: sourceURL.appendingPathComponent("rebuild.jpg"), color: .systemYellow)
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        let store = CatalogStore(storageURL: catalogURL)
+        await store.addFolder(sourceURL)
+        let coordinator = ArchiveCoordinator(catalogURL: catalogURL)
+        coordinator.start(catalog: store)
+        #expect(await waitForArchive(coordinator))
+        let asset = try #require(store.assets.first)
+        let hashBeforeEviction = store.archiveMetadata(for: asset).exactHash
+
+        await coordinator.clearOfflinePreviews(catalog: store)
+        #expect(store.archiveMetadata(for: asset).previewState == .evicted)
+        #expect(store.offlinePreviewURL(for: asset) == nil)
+
+        coordinator.rebuildOfflinePreviews(catalog: store)
+        #expect(await waitForArchive(coordinator))
+        let rebuiltMetadata = store.archiveMetadata(for: asset)
+        #expect(rebuiltMetadata.previewState == .complete)
+        #expect(rebuiltMetadata.exactHash == hashBeforeEviction)
+        #expect(store.offlinePreviewURL(for: asset) != nil)
+    }
+
+    @Test
+    func archiveMetadataIsNotSerializedIntoCatalogJSON() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = fixtureSource(id: UUID(), rootURL: root)
+        let asset = PhotoAsset(id: UUID(), sourceID: source.id, relativePath: "state.jpg", filename: "state.jpg", fileExtension: "jpg", fileSize: 1, modifiedAt: .now, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 5, flag: .pick, isFavorite: true, editRecipe: EditRecipe(exposure: 0.5), ocrText: "本地 OCR")
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        try CatalogPersistence(fileURL: catalogURL).save(CatalogSnapshot(sources: [source], assets: [asset]))
+        let json = try String(contentsOf: catalogURL, encoding: .utf8)
+
+        #expect(!json.contains("archive"))
+        #expect(json.contains("本地 OCR"))
+        #expect(json.contains("rating"))
+    }
+
+    @Test
+    @MainActor
+    func archiveAvailabilityUsesLoadedIndexesForFiftyThousandAssets() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = fixtureSource(id: UUID(), rootURL: root)
+        let assets = syntheticAssets(sourceID: source.id, count: 50_000)
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        try CatalogPersistence(fileURL: catalogURL).save(CatalogSnapshot(sources: [source], assets: assets))
+
+        let index = try ArchiveIndexPersistence(databaseURL: ArchiveIndexPersistence.databaseURL(for: catalogURL))
+        try index.bootstrap(sources: [source], assets: assets)
+        let first = assets[4_000]
+        let copy = assets[48_000]
+        let firstMetadata = ArchiveAssetMetadata(exactHash: "availability-duplicate", hashedFileSize: first.fileSize, hashedModifiedAt: first.modifiedAt, hashUpdatedAt: .now, hashState: .complete, previewState: .pending)
+        let copyMetadata = ArchiveAssetMetadata(exactHash: "availability-duplicate", hashedFileSize: copy.fileSize, hashedModifiedAt: copy.modifiedAt, hashUpdatedAt: .now, hashState: .complete, previewState: .pending)
+        _ = try index.save(result: ArchiveProcessingResult(assetID: first.id, metadata: firstMetadata, didHash: true, didCreatePreview: false))
+        _ = try index.save(result: ArchiveProcessingResult(assetID: copy.id, metadata: copyMetadata, didHash: true, didCreatePreview: false))
+
+        let store = CatalogStore(storageURL: catalogURL)
+        #expect(store.archiveAvailability(for: first) == .multipleCopies)
+        #expect(store.archiveOriginalLocation(for: assets[25_000])?.relativePath == "synthetic/25000.jpg")
+        #expect(store.archiveAvailableCopyLocation(for: first)?.assetID == copy.id)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoAI-Mac-Archive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

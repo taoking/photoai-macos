@@ -202,6 +202,15 @@ final class CatalogStore: ObservableObject {
         assets.filter { selectedAssetIDs.contains($0.id) }
     }
 
+    /// 需要读取原始字节的旧模块共享这一过滤口径；离线历史仍保留给浏览、人物预览和归档。
+    var availableAssets: [PhotoAsset] {
+        assets.filter(isOriginalAvailable(for:))
+    }
+
+    var availableImageAssets: [PhotoAsset] {
+        availableAssets.filter { $0.mediaType == .image }
+    }
+
     var selectionAnchorAsset: PhotoAsset? {
         guard let selectionAnchorID else { return nil }
         return assets.first(where: { $0.id == selectionAnchorID })
@@ -366,7 +375,7 @@ final class CatalogStore: ObservableObject {
     }
 
     func renderRequest(for asset: PhotoAsset, lut: LUTRenderRecipe? = nil) -> ImageRenderRequest? {
-        guard isOriginalAvailable(for: asset), let source = sources.first(where: { $0.id == asset.sourceID }) else { return nil }
+        guard isOriginalAvailable(for: asset), let source = sourceByID[asset.sourceID] else { return nil }
         return ImageRenderRequest(
             assetID: asset.id,
             bookmarkData: source.bookmarkData,
@@ -379,7 +388,7 @@ final class CatalogStore: ObservableObject {
     }
 
     func isOriginalAvailable(for asset: PhotoAsset) -> Bool {
-        guard let source = sources.first(where: { $0.id == asset.sourceID }), source.status == .ready else { return false }
+        guard let source = sourceByID[asset.sourceID], source.status == .ready else { return false }
         return FileManager.default.fileExists(atPath: URL(fileURLWithPath: source.lastKnownPath).appendingPathComponent(asset.relativePath).path)
     }
 
@@ -512,10 +521,8 @@ final class CatalogStore: ObservableObject {
     }
 
     func ocrRequestsForUnindexedAssets() -> [OCRIndexRequest] {
-        assets.compactMap { asset in
-            guard asset.mediaType == .image,
-                  asset.ocrText == nil,
-                  isOriginalAvailable(for: asset),
+        availableImageAssets.compactMap { asset in
+            guard asset.ocrText == nil,
                   let source = sourceByID[asset.sourceID] else {
                 return nil
             }
@@ -529,10 +536,8 @@ final class CatalogStore: ObservableObject {
     }
 
     func faceAnalysisRequests() -> [FaceAnalysisRequest] {
-        assets.compactMap { asset in
-            guard asset.mediaType == .image,
-                  isOriginalAvailable(for: asset),
-                  let source = sourceByID[asset.sourceID] else {
+        availableImageAssets.compactMap { asset in
+            guard let source = sourceByID[asset.sourceID] else {
                 return nil
             }
             return FaceAnalysisRequest(
@@ -545,8 +550,8 @@ final class CatalogStore: ObservableObject {
     }
 
     func cleanupRequests() -> [CleanupAssetRequest] {
-        assets.compactMap { asset in
-            guard isOriginalAvailable(for: asset), let source = sourceByID[asset.sourceID] else { return nil }
+        availableAssets.compactMap { asset in
+            guard let source = sourceByID[asset.sourceID] else { return nil }
             return CleanupAssetRequest(
                 assetID: asset.id,
                 bookmarkData: source.bookmarkData,

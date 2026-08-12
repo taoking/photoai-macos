@@ -137,7 +137,7 @@ struct AppShellView: View {
     }
 
     private func startBatchExport(using preset: ExportPreset) {
-        let assets = catalog.selectedAssets.filter(\.supportsEditing)
+        let assets = catalog.selectedAssets.filter(catalog.canEdit)
         batch.chooseDestinationAndStart(assets: assets, preset: preset) { asset in
             catalog.renderRequest(for: asset, lut: luts.renderRecipe(for: catalog.recipe(for: asset)))
         }
