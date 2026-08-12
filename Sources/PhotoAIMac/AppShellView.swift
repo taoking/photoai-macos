@@ -32,8 +32,8 @@ struct AppShellView: View {
             catalog.clearSelection()
         }
         .task { archive.start(catalog: catalog) }
-        .onChange(of: catalog.assets) { _, _ in
-            archive.start(catalog: catalog)
+        .onChange(of: catalog.archiveEnqueueRevision) { _, _ in
+            archive.enqueue(catalog.takeScheduledArchiveProcessingRequests(), catalog: catalog)
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -1255,6 +1255,10 @@ private struct ArchiveLibraryView: View {
                     isClearConfirmationPresented = true
                 }
                 .disabled(catalog.archivePreviewCacheStatistics().assetCount == 0)
+
+                Button("重新建立离线预览") {
+                    archive.rebuildOfflinePreviews(catalog: catalog)
+                }
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 10)
@@ -1305,7 +1309,9 @@ private struct ArchiveLibraryView: View {
             isPresented: $isClearConfirmationPresented,
             titleVisibility: .visible
         ) {
-            Button("删除离线预览", role: .destructive) { catalog.clearOfflinePreviews() }
+            Button("删除离线预览", role: .destructive) {
+                Task { await archive.clearOfflinePreviews(catalog: catalog) }
+            }
         } message: {
             Text("只会删除本机生成的离线预览，不会删除原始照片、Catalog、哈希、人物记录或编辑配方。")
         }
@@ -1361,11 +1367,12 @@ private struct InspectorView: View {
                 Section("归档") {
                     let availability = catalog.archiveAvailability(for: asset)
                     LabeledContent("状态", value: availability.title)
-                    LabeledContent("Hash", value: asset.archiveMetadata.hashState.title)
-                    if let hashUpdatedAt = asset.archiveMetadata.hashUpdatedAt {
+                    let metadata = catalog.archiveMetadata(for: asset)
+                    LabeledContent("Hash", value: metadata.hashState.title)
+                    if let hashUpdatedAt = metadata.hashUpdatedAt {
                         LabeledContent("Hash 更新时间", value: hashUpdatedAt.formatted(date: .abbreviated, time: .shortened))
                     }
-                    if let preview = asset.archiveMetadata.preview {
+                    if let preview = metadata.preview {
                         LabeledContent("离线预览", value: "\(preview.width) × \(preview.height) · \(ByteCountFormatter.string(fromByteCount: preview.byteSize, countStyle: .file))")
                     } else {
                         LabeledContent("离线预览", value: "尚未生成")

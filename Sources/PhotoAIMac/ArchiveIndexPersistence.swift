@@ -58,8 +58,13 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
         try execute("BEGIN IMMEDIATE;")
         do {
             var summary = ArchiveImportSummary(scannedCount: assets.count)
-            let seenPaths = Set(assets.map(\.relativePath))
-            try markUnavailableLocations(sourceID: source.id, excluding: seenPaths)
+            // 不用 `NOT IN (?, ?, …)` 表示本次扫描集合：50k 文件会超过 SQLite
+            // 的绑定参数上限。事务开始时先将来源位置标为不可用，每个实际扫描到的
+            // 项目再通过 UPSERT 复原为可用，未扫描到的路径自然保留为不可用。
+            try execute(
+                "UPDATE asset_locations SET is_available = 0 WHERE source_id = ?;",
+                bindings: [.text(source.id.uuidString)]
+            )
             for asset in assets {
                 let isExisting = previouslyIndexedKeys.contains(asset.identityKey)
                 if isExisting { summary.sameIndexedFileCount += 1 } else { summary.newAssetCount += 1 }
@@ -105,6 +110,15 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         try execute("UPDATE asset_locations SET is_available = 0 WHERE source_id = ?;", bindings: [.text(sourceID.uuidString)])
+    }
+
+    func recordUnavailableLocation(sourceID: UUID, relativePath: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try execute(
+            "UPDATE asset_locations SET is_available = 0 WHERE source_id = ? AND relative_path = ?;",
+            bindings: [.text(sourceID.uuidString), .text(relativePath)]
+        )
     }
 
     func save(result: ArchiveProcessingResult) throws -> [ArchiveDuplicateRelationship] {
@@ -171,10 +185,72 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
         return (Int(sqlite3_column_int(statement, 0)), sqlite3_column_int64(statement, 1))
     }
 
-    func removeAllPreviewMetadata() throws {
+    /// 用户释放派生预览后保留哈希与历史；`evicted` 不会被自动归档任务重新生成。
+    func evictAllPreviews() throws {
         lock.lock()
         defer { lock.unlock() }
-        try execute("UPDATE archive_assets SET preview_relative_path = NULL, preview_version = NULL, preview_width = NULL, preview_height = NULL, preview_byte_size = NULL, preview_generated_at = NULL, preview_source_modified_at = NULL, preview_state = 'pending';")
+        try execute("BEGIN IMMEDIATE;")
+        do {
+            // 清理是用户明确的“不要再占用空间”选择。即使某项正等待生成，也必须
+            // 转成 evicted，确保取消后的 hash-only 恢复不会又把预览写回来。
+            try execute("UPDATE archive_assets SET preview_relative_path = NULL, preview_version = NULL, preview_width = NULL, preview_height = NULL, preview_byte_size = NULL, preview_generated_at = NULL, preview_source_modified_at = NULL, preview_state = 'evicted' WHERE preview_state != 'unsupported';")
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    /// 用户明确重建预览时恢复已释放或临时失败的项目；永久不支持格式保持不自动重试。
+    func restoreEvictedPreviews() throws -> [UUID] {
+        lock.lock()
+        defer { lock.unlock() }
+        let assetIDs = try queryUUIDs("SELECT asset_id FROM archive_assets WHERE preview_state IN ('evicted', 'retryableFailure');", bindings: [])
+        guard !assetIDs.isEmpty else { return [] }
+        try execute("BEGIN IMMEDIATE;")
+        do {
+            try execute("UPDATE archive_assets SET preview_state = 'pending', last_error = NULL WHERE preview_state IN ('evicted', 'retryableFailure');")
+            try execute("COMMIT;")
+            return assetIDs
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    /// 仅在用户明确从 Catalog 移除项目后调用；普通外置盘缺失绝不能走这条路径。
+    /// 数据库删除在一个事务内完成，预览文件路径由调用者在提交后删除。
+    func removeArchiveRecords(assetIDs: Set<UUID>) throws -> [String] {
+        guard !assetIDs.isEmpty else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        let orderedIDs = assetIDs.sorted { $0.uuidString < $1.uuidString }
+        var previewPaths: [String] = []
+        try execute("BEGIN IMMEDIATE;")
+        do {
+            for batch in orderedIDs.chunked(into: 400) {
+                let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                let bindings = batch.map { SQLiteValue.text($0.uuidString) }
+                do {
+                    var statement: OpaquePointer?
+                    defer { sqlite3_finalize(statement) }
+                    try prepare("SELECT preview_relative_path FROM archive_assets WHERE asset_id IN (\(placeholders)) AND preview_relative_path IS NOT NULL;", statement: &statement)
+                    try bind(bindings, to: statement)
+                    while sqlite3_step(statement) == SQLITE_ROW {
+                        if let path = string(column: 0, statement: statement) { previewPaths.append(path) }
+                    }
+                }
+                try execute("DELETE FROM duplicate_relationships WHERE first_asset_id IN (\(placeholders)) OR second_asset_id IN (\(placeholders));", bindings: bindings + bindings)
+                try execute("DELETE FROM visual_hash_segments WHERE asset_id IN (\(placeholders));", bindings: bindings)
+                try execute("DELETE FROM asset_locations WHERE asset_id IN (\(placeholders));", bindings: bindings)
+                try execute("DELETE FROM archive_assets WHERE asset_id IN (\(placeholders));", bindings: bindings)
+            }
+            try execute("COMMIT;")
+            return previewPaths
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
     }
 
     private func createSchema() throws {
@@ -313,16 +389,6 @@ final class ArchiveIndexPersistence: @unchecked Sendable {
             """,
             bindings: locationBindings(location)
         )
-    }
-
-    private func markUnavailableLocations(sourceID: UUID, excluding paths: Set<String>) throws {
-        if paths.isEmpty {
-            try execute("UPDATE asset_locations SET is_available = 0 WHERE source_id = ?;", bindings: [.text(sourceID.uuidString)])
-            return
-        }
-        let placeholders = Array(repeating: "?", count: paths.count).joined(separator: ",")
-        let bindings: [SQLiteValue] = [.text(sourceID.uuidString)] + paths.sorted().map(SQLiteValue.text)
-        try execute("UPDATE asset_locations SET is_available = 0 WHERE source_id = ? AND relative_path NOT IN (\(placeholders));", bindings: bindings)
     }
 
     private func exactDuplicateRelationships(assetID: UUID, exactHash: String?) throws -> [ArchiveDuplicateRelationship] {
@@ -541,6 +607,15 @@ private enum SQLiteValue {
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        precondition(size > 0)
+        return stride(from: 0, to: count, by: size).map { start in
+            Array(self[start..<Swift.min(start + size, count)])
+        }
+    }
+}
 
 enum ArchiveIndexError: LocalizedError {
     case openFailed

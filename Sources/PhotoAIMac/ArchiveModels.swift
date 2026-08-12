@@ -20,8 +20,12 @@ enum ArchivePreviewState: String, Codable, Hashable, Sendable {
     case pending
     case complete
     case stale
-    case failed
+    /// 临时 I/O 中断等可由用户明确重试的失败，不会在每次启动时无限重试。
+    case retryableFailure
+    /// 当前 ImageIO 无法解码的格式；除非实现增加支持，否则不自动重复尝试。
     case unsupported
+    /// 用户主动释放了派生预览。哈希仍然保留，只有明确“重新建立”才会恢复预览。
+    case evicted
 }
 
 enum AssetArchiveAvailability: String, Codable, Hashable, Sendable {
@@ -118,7 +122,19 @@ struct ArchiveAssetMetadata: Codable, Hashable, Sendable {
 
     func needsPreview(for asset: PhotoAsset) -> Bool {
         guard asset.mediaType == .image else { return false }
-        return previewState != .complete || preview?.version != OfflinePreviewMetadata.currentVersion || preview?.sourceModifiedAt != asset.modifiedAt
+        switch previewState {
+        case .pending, .stale:
+            return true
+        case .complete:
+            return preview?.version != OfflinePreviewMetadata.currentVersion || preview?.sourceModifiedAt != asset.modifiedAt
+        case .retryableFailure, .unsupported, .evicted:
+            return false
+        }
+    }
+
+    func canRebuildPreview(for asset: PhotoAsset) -> Bool {
+        guard asset.mediaType == .image else { return false }
+        return previewState == .evicted || previewState == .retryableFailure
     }
 
     func invalidatedForChangedSource() -> ArchiveAssetMetadata {
@@ -265,30 +281,4 @@ struct ArchiveImportSummary: Equatable, Sendable {
     var exactDuplicateCount = 0
     var possibleVisualDuplicateCount = 0
     var failureCount = 0
-}
-
-extension PhotoAsset {
-    func archiveAvailability(sources: [PhotoSource], locations: [AssetLocation], duplicates: [ArchiveDuplicateRelationship]) -> AssetArchiveAvailability {
-        let ownLocations = locations.filter { $0.assetID == id }
-        let sourceByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
-        let isOnline: (AssetLocation) -> Bool = { location in
-            location.isAvailable && sourceByID[location.sourceID]?.status == .ready
-        }
-        let exactDuplicateAssetIDs = Set(duplicates.compactMap { relationship -> UUID? in
-            guard relationship.kind == .exactDuplicate else { return nil }
-            if relationship.firstAssetID == id { return relationship.secondAssetID }
-            if relationship.secondAssetID == id { return relationship.firstAssetID }
-            return nil
-        })
-        let hasOnlineLocation = ownLocations.contains(where: isOnline)
-        let hasOnlineIndexedCopy = locations.contains { location in
-            exactDuplicateAssetIDs.contains(location.assetID) && isOnline(location)
-        }
-        if hasOnlineLocation || hasOnlineIndexedCopy, !exactDuplicateAssetIDs.isEmpty { return .multipleCopies }
-        if hasOnlineLocation { return .online }
-        if ownLocations.isEmpty { return .missing }
-        // 来源仍在线但该路径不再存在是“缺失”；整个来源不可访问才是“离线”。
-        if ownLocations.contains(where: { sourceByID[$0.sourceID]?.status == .ready }) { return .missing }
-        return .offline
-    }
 }

@@ -62,19 +62,17 @@ struct ArchiveWorkflowTests {
         #expect(!unchanged.didHash)
         #expect(!unchanged.didCreatePreview)
 
-        var changed = asset
-        changed.archive = metadata.invalidatedForChangedSource()
-        changed = PhotoAsset(
-            id: changed.id, sourceID: changed.sourceID, relativePath: changed.relativePath, filename: changed.filename,
-            fileExtension: changed.fileExtension, fileSize: changed.fileSize + 1, modifiedAt: changed.modifiedAt?.addingTimeInterval(1),
-            captureDate: changed.captureDate, width: changed.width, height: changed.height, cameraMake: changed.cameraMake,
-            cameraModel: changed.cameraModel, lens: changed.lens, focalLength: changed.focalLength, aperture: changed.aperture,
-            shutterSpeed: changed.shutterSpeed, iso: changed.iso, mediaType: changed.mediaType, rawType: changed.rawType,
-            rating: changed.rating, flag: changed.flag, isFavorite: changed.isFavorite, editRecipe: changed.editRecipe, ocrText: changed.ocrText,
-            archive: changed.archive
+        let changed = PhotoAsset(
+            id: asset.id, sourceID: asset.sourceID, relativePath: asset.relativePath, filename: asset.filename,
+            fileExtension: asset.fileExtension, fileSize: asset.fileSize + 1, modifiedAt: asset.modifiedAt?.addingTimeInterval(1),
+            captureDate: asset.captureDate, width: asset.width, height: asset.height, cameraMake: asset.cameraMake,
+            cameraModel: asset.cameraModel, lens: asset.lens, focalLength: asset.focalLength, aperture: asset.aperture,
+            shutterSpeed: asset.shutterSpeed, iso: asset.iso, mediaType: asset.mediaType, rawType: asset.rawType,
+            rating: asset.rating, flag: asset.flag, isFavorite: asset.isFavorite, editRecipe: asset.editRecipe, ocrText: asset.ocrText
         )
-        #expect(changed.archiveMetadata.needsHash(for: changed))
-        #expect(changed.archiveMetadata.needsPreview(for: changed))
+        let invalidated = metadata.invalidatedForChangedSource()
+        #expect(invalidated.needsHash(for: changed))
+        #expect(invalidated.needsPreview(for: changed))
     }
 
     @Test
@@ -118,23 +116,6 @@ struct ArchiveWorkflowTests {
         _ = try persistence.save(result: ArchiveProcessingResult(assetID: second.id, metadata: changedMetadata, didHash: true, didCreatePreview: false))
         let rebuilt = try persistence.load(assetIDs: [first.id, second.id]).relationships
         #expect(!rebuilt.contains { $0.kind == .exactDuplicate && Set([$0.firstAssetID, $0.secondAssetID]) == Set([first.id, second.id]) })
-    }
-
-    @Test
-    func offlineOriginalWithOnlineExactCopyReportsMultipleCopies() {
-        let offlineSource = fixtureSource(id: UUID(), rootURL: URL(fileURLWithPath: "/offline"))
-        let onlineSource = fixtureSource(id: UUID(), rootURL: URL(fileURLWithPath: "/online"))
-        let asset = PhotoAsset(id: UUID(), sourceID: offlineSource.id, relativePath: "original.jpg", filename: "original.jpg", fileExtension: "jpg", fileSize: 1, modifiedAt: nil, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 0, flag: .none, isFavorite: false)
-        let copy = PhotoAsset(id: UUID(), sourceID: onlineSource.id, relativePath: "copy.jpg", filename: "copy.jpg", fileExtension: "jpg", fileSize: 1, modifiedAt: nil, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 0, flag: .none, isFavorite: false)
-        var unavailableSource = offlineSource
-        unavailableSource.status = .missing
-        let locations = [
-            AssetLocation(assetID: asset.id, sourceID: unavailableSource.id, relativePath: asset.relativePath, filename: asset.filename, fileSize: asset.fileSize, modifiedAt: nil, isAvailable: false),
-            AssetLocation(assetID: copy.id, sourceID: onlineSource.id, relativePath: copy.relativePath, filename: copy.filename, fileSize: copy.fileSize, modifiedAt: nil, isAvailable: true)
-        ]
-        let duplicates = [ArchiveDuplicateRelationship(firstAssetID: asset.id, secondAssetID: copy.id, kind: .exactDuplicate)]
-
-        #expect(asset.archiveAvailability(sources: [unavailableSource, onlineSource], locations: locations, duplicates: duplicates) == .multipleCopies)
     }
 
     @Test
@@ -206,14 +187,14 @@ struct ArchiveWorkflowTests {
         let catalogURL = root.appendingPathComponent("catalog.json")
         let firstRun = CatalogStore(storageURL: catalogURL)
         await firstRun.addFolder(sourceURL)
-        #expect(firstRun.assets.first?.archiveMetadata.hashState == .pending)
+        #expect(firstRun.archiveMetadata(for: try #require(firstRun.assets.first)).hashState == .pending)
 
         let restartedCatalog = CatalogStore(storageURL: catalogURL)
         let resumed = ArchiveCoordinator(catalogURL: catalogURL)
         resumed.start(catalog: restartedCatalog)
         #expect(await waitForArchive(resumed))
         let archived = try #require(restartedCatalog.assets.first)
-        #expect(archived.archiveMetadata.hashState == .complete)
+        #expect(restartedCatalog.archiveMetadata(for: archived).hashState == .complete)
         #expect(restartedCatalog.offlinePreviewURL(for: archived) != nil)
     }
 
@@ -249,7 +230,7 @@ struct ArchiveWorkflowTests {
         coordinator.resume(catalog: store)
         #expect(await waitForArchive(coordinator, attempts: 2_000))
         let archived = try #require(store.assets.first)
-        #expect(archived.archiveMetadata.hashState == .complete)
+        #expect(store.archiveMetadata(for: archived).hashState == .complete)
         #expect(store.offlinePreviewURL(for: archived) != nil)
         #expect(try Data(contentsOf: imageURL) == sourceDataBeforeArchive)
         #expect(!originalData.isEmpty)
@@ -313,6 +294,138 @@ struct ArchiveWorkflowTests {
         #expect(reloaded.metadata[targetAtFiftyThousand.id]?.exactHash == "indexed-target")
     }
 
+    @Test
+    func recordScanAtFiftyThousandUsesBoundedSQLiteUpdatesAndKeepsMissingPathsUnavailable() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try ArchiveIndexPersistence(databaseURL: root.appendingPathComponent("archive.sqlite"))
+        let source = fixtureSource(id: UUID(), rootURL: root)
+        let initialAssets = syntheticAssets(sourceID: source.id, count: 50_000)
+        try persistence.bootstrap(sources: [source], assets: initialAssets)
+
+        let scannedAssets = Array(initialAssets.dropLast(137))
+        let summary = try persistence.recordScan(
+            source: source,
+            assets: scannedAssets,
+            previouslyIndexedKeys: Set(initialAssets.map(\.identityKey))
+        )
+        let loaded = try persistence.load(assetIDs: initialAssets.map(\.id))
+        let availabilityByAssetID = Dictionary(grouping: loaded.locations, by: \.assetID).mapValues { $0.contains(where: \.isAvailable) }
+
+        #expect(summary.scannedCount == 49_863)
+        #expect(summary.sameIndexedFileCount == 49_863)
+        #expect(summary.newAssetCount == 0)
+        #expect(initialAssets.dropLast(137).allSatisfy { availabilityByAssetID[$0.id] == true })
+        #expect(initialAssets.suffix(137).allSatisfy { availabilityByAssetID[$0.id] == false })
+    }
+
+    @Test
+    func queueDrainsFiftyThousandRequestsOnceWithoutRegeneratingCatalogRequests() {
+        let requests = syntheticAssets(sourceID: UUID(), count: 50_000).map { asset in
+            ArchiveProcessingRequest(asset: asset, bookmarkData: Data(), rootPath: "/tmp", existingMetadata: .empty)
+        }
+        var queue = ArchiveRequestQueue(requests)
+        #expect(queue.count == 50_000)
+        #expect(queue.enqueue(requests, excluding: []) == [])
+
+        var drained = Set<UUID>()
+        while let request = queue.dequeue() {
+            #expect(drained.insert(request.asset.id).inserted)
+        }
+        #expect(drained.count == 50_000)
+        #expect(queue.isEmpty)
+
+        let resumed = Array(drained.prefix(200)).compactMap { id in requests.first(where: { $0.asset.id == id }) }
+        #expect(queue.enqueue(resumed, excluding: []).count == 200)
+        #expect(queue.enqueue(resumed, excluding: []).isEmpty)
+    }
+
+    @Test
+    func evictedAndPermanentPreviewStatesDoNotAutomaticallyRetry() {
+        let asset = PhotoAsset(id: UUID(), sourceID: UUID(), relativePath: "image.jpg", filename: "image.jpg", fileExtension: "jpg", fileSize: 1, modifiedAt: .now, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 0, flag: .none, isFavorite: false)
+        #expect(!ArchiveAssetMetadata(previewState: .evicted).needsPreview(for: asset))
+        #expect(!ArchiveAssetMetadata(previewState: .unsupported).needsPreview(for: asset))
+        #expect(!ArchiveAssetMetadata(previewState: .retryableFailure).needsPreview(for: asset))
+        #expect(ArchiveAssetMetadata(previewState: .evicted).canRebuildPreview(for: asset))
+        #expect(!ArchiveAssetMetadata(previewState: .unsupported).canRebuildPreview(for: asset))
+    }
+
+    @Test
+    func previewCompressionAdaptsToDerivedPreviewDimensions() {
+        #expect(ArchiveProcessor.previewQuality(width: 1_280, height: 900) == 0.71)
+        #expect(ArchiveProcessor.previewQuality(width: 1_280, height: 1_000) == 0.68)
+        #expect(ArchiveProcessor.previewQuality(width: 640, height: 480) == 0.74)
+    }
+
+    @Test
+    @MainActor
+    func offlineAssetsAreExcludedFromNewOCRPeopleCleanupAndCullingWork() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+        try writeJPEG(to: sourceURL.appendingPathComponent("offline.jpg"), color: .systemCyan)
+        let store = CatalogStore(storageURL: root.appendingPathComponent("catalog.json"))
+        await store.addFolder(sourceURL)
+        try FileManager.default.moveItem(at: sourceURL, to: root.appendingPathComponent("source-offline", isDirectory: true))
+        await store.rescan(try #require(store.sources.first?.id))
+
+        #expect(store.ocrRequestsForUnindexedAssets().isEmpty)
+        #expect(store.faceAnalysisRequests().isEmpty)
+        #expect(store.cleanupRequests().isEmpty) // Cleanup 与 Culling 共享这组原始文件请求。
+    }
+
+    @Test
+    @MainActor
+    func explicitRemovalPurgesArchiveRecordsButMissingFileRetainsHistory() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+        let imageURL = sourceURL.appendingPathComponent("delete-me.jpg")
+        try writeJPEG(to: imageURL, color: .systemPink)
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        let store = CatalogStore(storageURL: catalogURL)
+        await store.addFolder(sourceURL)
+        let coordinator = ArchiveCoordinator(catalogURL: catalogURL)
+        coordinator.start(catalog: store)
+        #expect(await waitForArchive(coordinator))
+        let asset = try #require(store.assets.first)
+
+        try FileManager.default.removeItem(at: imageURL)
+        await store.rescan(try #require(store.sources.first?.id))
+        #expect(store.assets.contains(where: { $0.id == asset.id }))
+        #expect(store.archiveMetadata(for: asset).hashState == .complete)
+
+        store.removeLocalRecords(assetIDs: [asset.id])
+        #expect(!store.assets.contains(where: { $0.id == asset.id }))
+        let index = try ArchiveIndexPersistence(databaseURL: ArchiveIndexPersistence.databaseURL(for: catalogURL))
+        let loaded = try index.load(assetIDs: [asset.id])
+        #expect(loaded.metadata[asset.id] == nil)
+        #expect(loaded.locations.isEmpty)
+        #expect(loaded.relationships.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func clearingPreviewsDuringArchiveWorkLeavesEvictedMetadataDeterministically() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+        for index in 0..<4 {
+            try writeJPEG(to: sourceURL.appendingPathComponent("active-\(index).jpg"), color: .systemIndigo)
+        }
+        let catalogURL = root.appendingPathComponent("catalog.json")
+        let store = CatalogStore(storageURL: catalogURL)
+        await store.addFolder(sourceURL)
+        let coordinator = ArchiveCoordinator(catalogURL: catalogURL)
+        coordinator.start(catalog: store)
+        await coordinator.clearOfflinePreviews(catalog: store)
+        #expect(store.assets.allSatisfy { store.archiveMetadata(for: $0).previewState != .complete })
+        #expect(store.assets.allSatisfy { store.archiveMetadata(for: $0).previewState == .evicted })
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoAI-Mac-Archive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -326,6 +439,12 @@ struct ArchiveWorkflowTests {
     private func fixtureAsset(sourceID: UUID, url: URL, rootURL: URL) throws -> PhotoAsset {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         return PhotoAsset(id: UUID(), sourceID: sourceID, relativePath: url.lastPathComponent, filename: url.lastPathComponent, fileExtension: url.pathExtension, fileSize: Int64(values.fileSize ?? 0), modifiedAt: values.contentModificationDate, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 0, flag: .none, isFavorite: false)
+    }
+
+    private func syntheticAssets(sourceID: UUID, count: Int) -> [PhotoAsset] {
+        (0..<count).map { index in
+            PhotoAsset(id: UUID(), sourceID: sourceID, relativePath: "synthetic/\(index).jpg", filename: "\(index).jpg", fileExtension: "jpg", fileSize: Int64(index + 1), modifiedAt: .now, captureDate: nil, width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil, focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil, mediaType: .image, rawType: nil, rating: 0, flag: .none, isFavorite: false)
+        }
     }
 
     private func writeJPEG(to url: URL, color: NSColor) throws {

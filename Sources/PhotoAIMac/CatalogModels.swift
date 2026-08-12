@@ -55,9 +55,6 @@ struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
     var editRecipe: EditRecipe? = nil
     /// `nil` means the asset has not been indexed for OCR yet; an empty string is an indexed image with no recognized text.
     var ocrText: String? = nil
-    /// Phase 14 的派生本地数据。缺失时表示从旧 Catalog 迁移而来，绝不影响原图记录。
-    var archive: ArchiveAssetMetadata? = nil
-
     var displayDimensions: String {
         guard let width, let height else { return "—" }
         return "\(width) × \(height)"
@@ -67,7 +64,6 @@ struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
 
     var identityKey: String { "\(sourceID.uuidString)/\(relativePath)" }
 
-    var archiveMetadata: ArchiveAssetMetadata { archive ?? .empty }
 }
 
 struct EditRecipe: Codable, Hashable, Sendable {
