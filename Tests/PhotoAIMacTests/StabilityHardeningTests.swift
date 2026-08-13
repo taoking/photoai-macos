@@ -64,13 +64,29 @@ struct StabilityHardeningTests {
             mediaType: .image
         )
         let store = ThumbnailStore()
-        store.load(request)
+        store.load(request) { _ in }
 
         for _ in 0..<100 where !store.completedKeys.contains(request.cacheKey) {
             try? await Task.sleep(for: .milliseconds(10))
         }
         #expect(store.completedKeys.contains(request.cacheKey))
         #expect(store.image(for: request) == nil)
+    }
+
+    @Test
+    func thumbnailFailureTransitionsToFailedState() {
+        let state = ThumbnailViewState.completed(with: nil)
+
+        #expect(state.isFailed)
+        #expect(!state.isLoading)
+    }
+
+    @Test
+    func personPreviewThumbnailFailureDoesNotStayLoading() {
+        let state = ThumbnailViewState.completed(with: nil)
+
+        #expect(state.isFailed)
+        #expect(!state.isLoading)
     }
 
     @Test

@@ -16,12 +16,39 @@ struct ThumbnailRequest: Sendable, Hashable {
     }
 }
 
+/// 单个缩略图订阅方自己的展示状态。它不发布到 `ThumbnailStore`，从而避免任意一张
+/// 缩略图完成时唤醒整个网格。
+enum ThumbnailViewState {
+    case idle
+    case loading
+    case loaded(NSImage)
+    case failed
+
+    static func completed(with image: NSImage?) -> ThumbnailViewState {
+        guard let image else { return .failed }
+        return .loaded(image)
+    }
+
+    var isLoading: Bool {
+        if case .loading = self { return true }
+        return false
+    }
+
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
 @MainActor
 final class ThumbnailStore: ObservableObject {
     private let memoryCache = NSCache<NSString, NSImage>()
-    private let renderingQueue = DispatchQueue(label: "com.taoking.PhotoAIMac.thumbnail", qos: .userInitiated)
+    /// 缩略图始终是可延后的界面增强项。使用 utility QoS，避免快速切换页面时
+    /// 大量解码任务与主线程/交互事件争抢 CPU。
+    private let renderingQueue = DispatchQueue(label: "com.taoking.PhotoAIMac.thumbnail", qos: .utility)
     private var inFlightKeys = Set<String>()
-    @Published private(set) var completedKeys = Set<String>()
+    private var callbacksByKey: [String: [UUID: (NSImage?) -> Void]] = [:]
+    private(set) var completedKeys = Set<String>()
 
     init() {
         memoryCache.countLimit = 600
@@ -32,9 +59,22 @@ final class ThumbnailStore: ObservableObject {
         memoryCache.object(forKey: request.cacheKey as NSString)
     }
 
-    func load(_ request: ThumbnailRequest) {
+    /// 仅让仍可见的请求方在完成时更新自己的 `@State`。缓存本身不发布全局变更，
+    /// 因而一张缩略图解码完成不会迫使整个网格重算。
+    @discardableResult
+    func load(
+        _ request: ThumbnailRequest,
+        completion: @escaping (NSImage?) -> Void
+    ) -> ThumbnailLoadToken? {
+        if let cachedImage = image(for: request) {
+            completion(cachedImage)
+            return nil
+        }
+
         let key = request.cacheKey
-        guard image(for: request) == nil, !inFlightKeys.contains(key) else { return }
+        let token = ThumbnailLoadToken(key: key, id: UUID())
+        callbacksByKey[key, default: [:]][token.id] = completion
+        guard !inFlightKeys.contains(key) else { return token }
         inFlightKeys.insert(key)
 
         renderingQueue.async { [weak self] in
@@ -48,9 +88,30 @@ final class ThumbnailStore: ObservableObject {
                     self.memoryCache.setObject(image, forKey: key as NSString, cost: pixelCount * 4)
                 }
                 self.completedKeys.insert(key)
+                let callbacks: [(NSImage?) -> Void]
+                if let registeredCallbacks = self.callbacksByKey.removeValue(forKey: key) {
+                    callbacks = Array(registeredCallbacks.values)
+                } else {
+                    callbacks = []
+                }
+                callbacks.forEach { $0(image) }
             }
         }
+        return token
     }
+
+    func cancel(_ token: ThumbnailLoadToken?) {
+        guard let token else { return }
+        callbacksByKey[token.key]?[token.id] = nil
+        if callbacksByKey[token.key]?.isEmpty == true {
+            callbacksByKey[token.key] = nil
+        }
+    }
+}
+
+struct ThumbnailLoadToken: Hashable {
+    fileprivate let key: String
+    fileprivate let id: UUID
 }
 
 private enum ThumbnailRenderer {
