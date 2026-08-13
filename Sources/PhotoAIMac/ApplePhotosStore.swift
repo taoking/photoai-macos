@@ -71,15 +71,27 @@ final class ApplePhotosStore: ObservableObject {
     @Published private(set) var state: ApplePhotosLoadState = .idle
     @Published private(set) var albums: [ApplePhotosAlbum] = []
     @Published private(set) var assets: [ApplePhotosAsset] = []
+    /// 筛选仅在数据源或筛选条件变更时计算一次。界面重绘（例如选择项目、切换
+    /// 检查器或从其他页面返回）只读取这里的结果，不会重新遍历整个 Photos 图库。
+    @Published private(set) var visibleAssets: [ApplePhotosAsset] = []
     @Published private(set) var selectedAssetIDs = Set<String>()
     @Published private(set) var previewImage: NSImage?
     @Published var selectedAlbumID: String?
-    @Published var browseFilter: ApplePhotosBrowseFilter = .all
-    @Published var dateFilter: ApplePhotosDateFilter = .allTime
-    @Published var searchText = ""
+    @Published var browseFilter: ApplePhotosBrowseFilter = .all {
+        didSet { rebuildVisibleAssets(resetDisplayWindow: true) }
+    }
+    @Published var dateFilter: ApplePhotosDateFilter = .allTime {
+        didSet { rebuildVisibleAssets(resetDisplayWindow: true) }
+    }
+    @Published var searchText = "" {
+        didSet { rebuildVisibleAssets(resetDisplayWindow: true) }
+    }
 
     private let imageManager = PHCachingImageManager()
     private var availabilityByAssetID: [String: ApplePhotosAsset.Availability] = [:]
+    private let thumbnailCache = NSCache<NSString, NSImage>()
+    private var thumbnailTasks: [ThumbnailRequestKey: Task<NSImage?, Never>] = [:]
+    private var availabilityTasks: [String: Task<ApplePhotosAsset.Availability, Never>] = [:]
     private var selection = ApplePhotosSelection()
     private var preheatedThumbnails: [ThumbnailPreheat] = []
     private let maximumPreheatedThumbnailCount = 96
@@ -88,15 +100,8 @@ final class ApplePhotosStore: ObservableObject {
     init() {
         // Xcode 27 SDK 中可读取图库的最低可用 access level 是 `readWrite`；本组件不会调用任何写 API。
         authorization = ApplePhotosAuthorization(PHPhotoLibrary.authorizationStatus(for: .readWrite))
-    }
-
-    var visibleAssets: [ApplePhotosAsset] {
-        let normalizedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return assets.filter { asset in
-            browseFilter.matches(asset)
-                && dateFilter.matches(asset)
-                && (normalizedSearch.isEmpty || asset.filename.localizedCaseInsensitiveContains(normalizedSearch))
-        }
+        thumbnailCache.countLimit = 240
+        thumbnailCache.totalCostLimit = 120 * 1_024 * 1_024
     }
 
     /// 网格只物化一个有界首屏，避免大图库在一次 SwiftUI / Accessibility 更新中
@@ -229,34 +234,76 @@ final class ApplePhotosStore: ObservableObject {
 
     /// 网格缩略图：目标尺寸来自 Grid Density × Retina scale，且明确禁止网络下载。
     func thumbnail(for assetID: String, targetSize: CGSize) async -> NSImage? {
-        guard let asset = photoKitAsset(id: assetID) else { return nil }
-        let response = await requestImage(
-            for: asset,
-            targetSize: targetSize,
-            contentMode: .aspectFill,
-            options: thumbnailOptions()
-        )
-        updateAvailability(assetID: assetID, response: response)
-        return response.image
+        let key = ThumbnailRequestKey(assetID: assetID, targetSize: targetSize)
+        if let cachedImage = thumbnailCache.object(forKey: key.cacheKey as NSString) {
+            return cachedImage
+        }
+        if let activeTask = thumbnailTasks[key] {
+            return await activeTask.value
+        }
+
+        let task = Task { [weak self] () -> NSImage? in
+            guard let self, let asset = self.photoKitAsset(id: assetID) else { return nil }
+            let response = await self.requestImage(
+                for: asset,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: self.thumbnailOptions()
+            )
+            self.updateAvailability(assetID: assetID, response: response)
+            return response.image
+        }
+        thumbnailTasks[key] = task
+        let image = await task.value
+        thumbnailTasks.removeValue(forKey: key)
+        if let image {
+            let pixelCount = max(1, Int(image.size.width * image.size.height))
+            thumbnailCache.setObject(image, forKey: key.cacheKey as NSString, cost: pixelCount * 4)
+        }
+        return image
     }
 
     /// 只在可见 Cell 或明确选中的项目上执行 1px 无网络可用性查询；结果缓存在内存。
     func resolveAvailability(for assetID: String) async -> ApplePhotosAsset.Availability {
         if let known = availabilityByAssetID[assetID] { return known }
-        guard let asset = photoKitAsset(id: assetID) else { return .unknown }
-        let options = PHImageRequestOptions()
-        options.isNetworkAccessAllowed = false
-        options.deliveryMode = .fastFormat
-        options.resizeMode = .fast
-        let response = await requestImage(
-            for: asset,
-            targetSize: CGSize(width: 1, height: 1),
-            contentMode: .aspectFit,
-            options: options
-        )
-        let availability = availability(from: response)
-        availabilityByAssetID[assetID] = availability
+        if let activeTask = availabilityTasks[assetID] {
+            return await activeTask.value
+        }
+
+        let task = Task { [weak self] () -> ApplePhotosAsset.Availability in
+            guard let self, let asset = self.photoKitAsset(id: assetID) else { return .unknown }
+            let options = PHImageRequestOptions()
+            options.isNetworkAccessAllowed = false
+            options.deliveryMode = .fastFormat
+            options.resizeMode = .fast
+            let response = await self.requestImage(
+                for: asset,
+                targetSize: CGSize(width: 1, height: 1),
+                contentMode: .aspectFit,
+                options: options
+            )
+            let availability = self.availability(from: response)
+            self.availabilityByAssetID[assetID] = availability
+            return availability
+        }
+        availabilityTasks[assetID] = task
+        let availability = await task.value
+        availabilityTasks.removeValue(forKey: assetID)
         return availability
+    }
+
+    private struct ThumbnailRequestKey: Hashable {
+        let assetID: String
+        let width: Int
+        let height: Int
+
+        init(assetID: String, targetSize: CGSize) {
+            self.assetID = assetID
+            width = Int(targetSize.width.rounded())
+            height = Int(targetSize.height.rounded())
+        }
+
+        var cacheKey: String { "\(assetID)-\(width)x\(height)" }
     }
 
     /// 预览只请求适合当前检查器显示的像素尺寸；浏览时永远不下载 iCloud 原件，也不请求 Full Original。
@@ -298,8 +345,14 @@ final class ApplePhotosStore: ObservableObject {
         case let .success(library):
             imageManager.stopCachingImagesForAllAssets()
             preheatedThumbnails = []
+            thumbnailCache.removeAllObjects()
+            thumbnailTasks.values.forEach { $0.cancel() }
+            thumbnailTasks = [:]
+            availabilityTasks.values.forEach { $0.cancel() }
+            availabilityTasks = [:]
             albums = library.albums
             assets = library.assets
+            rebuildVisibleAssets()
             availabilityByAssetID = [:]
             displayLimit = ApplePhotosDisplayWindow.pageSize
             selection.retain(Set(assets.map(\.id)))
@@ -314,13 +367,31 @@ final class ApplePhotosStore: ObservableObject {
     private func clearTransientLibraryState() {
         imageManager.stopCachingImagesForAllAssets()
         preheatedThumbnails = []
+        thumbnailCache.removeAllObjects()
+        thumbnailTasks.values.forEach { $0.cancel() }
+        thumbnailTasks = [:]
+        availabilityTasks.values.forEach { $0.cancel() }
+        availabilityTasks = [:]
         albums = []
         assets = []
+        visibleAssets = []
         availabilityByAssetID = [:]
         displayLimit = ApplePhotosDisplayWindow.pageSize
         selection.clear()
         selectedAssetIDs = []
         previewImage = nil
+    }
+
+    private func rebuildVisibleAssets(resetDisplayWindow: Bool = false) {
+        let normalizedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        visibleAssets = assets.filter { asset in
+            browseFilter.matches(asset)
+                && dateFilter.matches(asset)
+                && (normalizedSearch.isEmpty || asset.filename.localizedCaseInsensitiveContains(normalizedSearch))
+        }
+        if resetDisplayWindow {
+            displayLimit = ApplePhotosDisplayWindow.pageSize
+        }
     }
 
     private func photoKitAsset(id: String) -> PHAsset? {

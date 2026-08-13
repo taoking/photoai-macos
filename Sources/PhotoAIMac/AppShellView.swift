@@ -164,6 +164,9 @@ private struct LibraryPlaceholderView: View {
     @EnvironmentObject private var applePhotos: ApplePhotosStore
 
     var body: some View {
+        // 保持同一次 render 中的本地 Catalog 结果一致，避免标题、空态判断和网格各自
+        // 重新筛选/排序整套资产。
+        let catalogAssets = catalog.assets(for: shell.selection)
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -175,7 +178,7 @@ private struct LibraryPlaceholderView: View {
 
                 Spacer()
 
-                Text(countLabel)
+                Text(countLabel(catalogAssets: catalogAssets))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -192,10 +195,10 @@ private struct LibraryPlaceholderView: View {
                 CleanupLibraryView()
             } else if shell.selection == .folders {
                 FolderSourceList()
-            } else if catalog.assets(for: shell.selection).isEmpty {
+            } else if catalogAssets.isEmpty {
                 EmptyLibraryView()
             } else {
-                CatalogAssetGrid(assets: catalog.assets(for: shell.selection))
+                CatalogAssetGrid(assets: catalogAssets)
             }
 
             Divider()
@@ -244,11 +247,11 @@ private struct LibraryPlaceholderView: View {
             : "Catalog 已在本机建立索引，原始文件不会被复制或修改。"
     }
 
-    private var countLabel: String {
+    private func countLabel(catalogAssets: [PhotoAsset]) -> String {
         if shell.selection == .applePhotos {
             return "\(applePhotos.visibleAssets.count) 个 Apple Photos 项目"
         }
-        return "\(catalog.assets(for: shell.selection).count) 张已索引"
+        return "\(catalogAssets.count) 张已索引"
     }
 }
 
@@ -456,10 +459,11 @@ private struct PersonFacePreview: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
     let face: DetectedFace
+    @State private var thumbnail: NSImage?
+    @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
         let request = catalog.assets.first(where: { $0.id == face.assetID }).flatMap(catalog.thumbnailRequest)
-        let thumbnail = request.flatMap(thumbnails.image(for:))
 
         ZStack {
             if let request, let thumbnail,
@@ -478,12 +482,27 @@ private struct PersonFacePreview: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .onAppear {
-            if let request { thumbnails.load(request) }
+            loadThumbnail(request)
         }
         .onChange(of: request?.cacheKey) { _, _ in
-            if let request { thumbnails.load(request) }
+            loadThumbnail(request)
+        }
+        .onDisappear {
+            thumbnails.cancel(thumbnailToken)
+            thumbnailToken = nil
         }
         .accessibilityLabel("人物关联照片预览")
+    }
+
+    private func loadThumbnail(_ request: ThumbnailRequest?) {
+        thumbnails.cancel(thumbnailToken)
+        thumbnailToken = nil
+        thumbnail = request.flatMap(thumbnails.image(for:))
+        guard thumbnail == nil, let request else { return }
+        thumbnailToken = thumbnails.load(request) { image in
+            thumbnail = image
+            thumbnailToken = nil
+        }
     }
 }
 
@@ -492,6 +511,7 @@ private struct SearchLibraryView: View {
     @EnvironmentObject private var ocr: OCRIndexStore
 
     var body: some View {
+        let searchAssets = catalog.assets(for: .search)
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 TextField(
@@ -526,7 +546,7 @@ private struct SearchLibraryView: View {
                         .foregroundStyle(ocr.state == .paused ? Color.orange : Color.secondary)
                 }
                 Spacer()
-                Text("\(catalog.assets(for: .search).count) 个结果")
+                Text("\(searchAssets.count) 个结果")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -539,14 +559,14 @@ private struct SearchLibraryView: View {
                     systemImage: "magnifyingglass",
                     description: Text("例如：rating>=4 format:raw、camera:Sony、text:invoice、after:2026-01-01。")
                 )
-            } else if catalog.assets(for: .search).isEmpty {
+            } else if searchAssets.isEmpty {
                 ContentUnavailableView(
                     "没有匹配结果",
                     systemImage: "magnifyingglass",
                     description: Text("条件按“且”组合；可修改关键词或清空结构化条件。")
                 )
             } else {
-                CatalogAssetGrid(assets: catalog.assets(for: .search))
+                CatalogAssetGrid(assets: searchAssets)
             }
         }
     }
@@ -602,9 +622,6 @@ private struct ApplePhotosLibraryView: View {
             applePhotos.refreshAuthorizationStatus()
         }
         .onChange(of: applePhotos.selectedAlbumID) { _, _ in reloadForExplicitBrowseChange() }
-        .onChange(of: applePhotos.browseFilter) { _, _ in applePhotos.resetDisplayedAssets() }
-        .onChange(of: applePhotos.dateFilter) { _, _ in applePhotos.resetDisplayedAssets() }
-        .onChange(of: applePhotos.searchText) { _, _ in applePhotos.resetDisplayedAssets() }
     }
 
     private var controls: some View {
@@ -830,8 +847,11 @@ private struct ApplePhotosAssetCell: View {
             applePhotos.preheatThumbnail(for: asset.id, targetSize: targetSize)
             async let loadedThumbnail = applePhotos.thumbnail(for: asset.id, targetSize: targetSize)
             async let loadedAvailability = applePhotos.resolveAvailability(for: asset.id)
-            thumbnail = await loadedThumbnail
-            availability = await loadedAvailability
+            let resultThumbnail = await loadedThumbnail
+            let resultAvailability = await loadedAvailability
+            guard !Task.isCancelled else { return }
+            thumbnail = resultThumbnail
+            availability = resultAvailability
         }
         .accessibilityLabel(accessibilityLabel)
         // 使用等价的可访问性值，保留选中状态的朗读，同时避免在大型网格中
@@ -1227,13 +1247,15 @@ private struct CatalogAssetGrid: View {
     let assets: [PhotoAsset]
 
     var body: some View {
+        // 范围选择只需一份稳定顺序，不能为每个 Cell 重复建立 N 元素数组。
+        let orderedAssetIDs = assets.map(\.id)
         ScrollView {
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: shell.gridDensity.minimumThumbnailWidth), spacing: 14)],
                 spacing: 14
             ) {
                 ForEach(assets) { asset in
-                    CatalogAssetCell(asset: asset, orderedAssetIDs: assets.map(\.id))
+                    CatalogAssetCell(asset: asset, orderedAssetIDs: orderedAssetIDs)
                 }
             }
             .padding(24)
@@ -1247,12 +1269,12 @@ private struct CatalogAssetCell: View {
 
     let asset: PhotoAsset
     let orderedAssetIDs: [UUID]
+    @State private var thumbnail: NSImage?
+    @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
         let request = catalog.thumbnailRequest(for: asset)
-        let image = request.flatMap(thumbnails.image(for:))
         let isSelected = catalog.selectedAssetIDs.contains(asset.id)
-        let hasFinishedLoading = request.map { thumbnails.completedKeys.contains($0.cacheKey) } ?? true
 
         Button {
             catalog.select(assetID: asset.id, in: orderedAssetIDs)
@@ -1262,12 +1284,12 @@ private struct CatalogAssetCell: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(.quaternary)
 
-                    if let image {
-                        Image(nsImage: image)
+                    if let thumbnail {
+                        Image(nsImage: thumbnail)
                             .resizable()
                             .interpolation(.medium)
                             .aspectRatio(contentMode: .fill)
-                    } else if asset.mediaType == .video || hasFinishedLoading {
+                    } else if asset.mediaType == .video {
                         Image(systemName: asset.systemImage)
                             .font(.title2)
                             .foregroundStyle(.secondary)
@@ -1313,17 +1335,28 @@ private struct CatalogAssetCell: View {
         }
         .buttonStyle(.plain)
         .onAppear {
-            if let request {
-                thumbnails.load(request)
-            }
+            loadThumbnail(request)
         }
         .onChange(of: request?.cacheKey) { _, _ in
-            if let request {
-                thumbnails.load(request)
-            }
+            loadThumbnail(request)
+        }
+        .onDisappear {
+            thumbnails.cancel(thumbnailToken)
+            thumbnailToken = nil
         }
         .accessibilityLabel("\(asset.filename)，\(asset.metadataSummary)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func loadThumbnail(_ request: ThumbnailRequest?) {
+        thumbnails.cancel(thumbnailToken)
+        thumbnailToken = nil
+        thumbnail = request.flatMap(thumbnails.image(for:))
+        guard thumbnail == nil, let request else { return }
+        thumbnailToken = thumbnails.load(request) { image in
+            thumbnail = image
+            thumbnailToken = nil
+        }
     }
 }
 

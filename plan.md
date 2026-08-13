@@ -4,6 +4,12 @@
 
 ## 当前阶段：Phase 15 — Apple Photos 系统相册接入
 
+### 切换性能修复（已完成）
+
+- [x] 在含 922 项本地 Catalog 的实际 app 中复现并采样反复侧栏切换；定位到重复 ID 构建、全局缩略图完成通知和 Apple Photos 全库即时筛选造成的主线程压力。
+- [x] 消除重复 ID 构建与全局缩略图完成通知，改为有界缓存和按 Cell 更新；离屏 Cell 会撤销其回调，避免待更新视图累积。
+- [x] 缓存 Apple Photos 筛选结果和进行中的缩略图/可用性请求；完成 7 轮实际侧栏切换、空闲进程采样、`swift test` 与 `xcodebuild test` 回归。
+
 ### Phase 15 — Apple Photos 系统相册接入（已实现；真实全库读取与渐进网格已验，剩余受控运行时复测待审）
 
 - [x] 从 `main` 建立独立 `agent/phase-15-apple-photos` 分支；不混入尚未合并的 Phase 14 PR #2。

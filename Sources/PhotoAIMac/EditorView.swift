@@ -323,10 +323,11 @@ private struct FilmstripCell: View {
 
     let asset: PhotoAsset
     let isSelected: Bool
+    @State private var thumbnail: NSImage?
+    @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
         let request = catalog.thumbnailRequest(for: asset)
-        let image = request.flatMap(thumbnails.image(for:))
 
         Button {
             catalog.select(assetID: asset.id, in: catalog.assets(for: .allPhotos).map(\.id), modifiers: [])
@@ -334,8 +335,8 @@ private struct FilmstripCell: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 5)
                     .fill(.quaternary)
-                if let image {
-                    Image(nsImage: image)
+                if let thumbnail {
+                    Image(nsImage: thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                 } else {
@@ -352,7 +353,22 @@ private struct FilmstripCell: View {
         }
         .buttonStyle(.plain)
         .onAppear {
-            if let request { thumbnails.load(request) }
+            loadThumbnail(request)
+        }
+        .onDisappear {
+            thumbnails.cancel(thumbnailToken)
+            thumbnailToken = nil
+        }
+    }
+
+    private func loadThumbnail(_ request: ThumbnailRequest?) {
+        thumbnails.cancel(thumbnailToken)
+        thumbnailToken = nil
+        thumbnail = request.flatMap(thumbnails.image(for:))
+        guard thumbnail == nil, let request else { return }
+        thumbnailToken = thumbnails.load(request) { image in
+            thumbnail = image
+            thumbnailToken = nil
         }
     }
 }
