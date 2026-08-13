@@ -459,19 +459,20 @@ private struct PersonFacePreview: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
     let face: DetectedFace
-    @State private var thumbnail: NSImage?
+    @State private var thumbnailState: ThumbnailViewState = .idle
     @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
         let request = catalog.assets.first(where: { $0.id == face.assetID }).flatMap(catalog.thumbnailRequest)
 
         ZStack {
-            if let request, let thumbnail,
+            if case let .loaded(thumbnail) = thumbnailState,
+               let request,
                let preview = FacePreviewRenderer.preview(thumbnail: thumbnail, face: face, thumbnailCacheKey: request.cacheKey) {
                 Image(nsImage: preview)
                     .resizable()
                     .scaledToFill()
-            } else if request != nil {
+            } else if thumbnailState.isLoading {
                 ProgressView()
                     .controlSize(.small)
             } else {
@@ -497,10 +498,17 @@ private struct PersonFacePreview: View {
     private func loadThumbnail(_ request: ThumbnailRequest?) {
         thumbnails.cancel(thumbnailToken)
         thumbnailToken = nil
-        thumbnail = request.flatMap(thumbnails.image(for:))
-        guard thumbnail == nil, let request else { return }
+        guard let request else {
+            thumbnailState = .idle
+            return
+        }
+        if let cachedImage = thumbnails.image(for: request) {
+            thumbnailState = .loaded(cachedImage)
+            return
+        }
+        thumbnailState = .loading
         thumbnailToken = thumbnails.load(request) { image in
-            thumbnail = image
+            thumbnailState = ThumbnailViewState.completed(with: image)
             thumbnailToken = nil
         }
     }
@@ -762,7 +770,7 @@ private struct ApplePhotosLibraryView: View {
     }
 
     private func reloadForExplicitBrowseChange() {
-        guard applePhotos.authorization.canRead, applePhotos.state == .loaded else { return }
+        guard applePhotos.authorization.canRead else { return }
         applePhotos.loadSelectedSource()
     }
 }
@@ -1269,7 +1277,7 @@ private struct CatalogAssetCell: View {
 
     let asset: PhotoAsset
     let orderedAssetIDs: [UUID]
-    @State private var thumbnail: NSImage?
+    @State private var thumbnailState: ThumbnailViewState = .idle
     @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
@@ -1284,7 +1292,7 @@ private struct CatalogAssetCell: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(.quaternary)
 
-                    if let thumbnail {
+                    if case let .loaded(thumbnail) = thumbnailState {
                         Image(nsImage: thumbnail)
                             .resizable()
                             .interpolation(.medium)
@@ -1293,9 +1301,13 @@ private struct CatalogAssetCell: View {
                         Image(systemName: asset.systemImage)
                             .font(.title2)
                             .foregroundStyle(.secondary)
-                    } else {
+                    } else if thumbnailState.isLoading {
                         ProgressView()
                             .controlSize(.small)
+                    } else {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .aspectRatio(4 / 3, contentMode: .fit)
@@ -1351,10 +1363,17 @@ private struct CatalogAssetCell: View {
     private func loadThumbnail(_ request: ThumbnailRequest?) {
         thumbnails.cancel(thumbnailToken)
         thumbnailToken = nil
-        thumbnail = request.flatMap(thumbnails.image(for:))
-        guard thumbnail == nil, let request else { return }
+        guard let request else {
+            thumbnailState = .idle
+            return
+        }
+        if let cachedImage = thumbnails.image(for: request) {
+            thumbnailState = .loaded(cachedImage)
+            return
+        }
+        thumbnailState = .loading
         thumbnailToken = thumbnails.load(request) { image in
-            thumbnail = image
+            thumbnailState = ThumbnailViewState.completed(with: image)
             thumbnailToken = nil
         }
     }

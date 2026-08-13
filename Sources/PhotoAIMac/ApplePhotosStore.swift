@@ -94,6 +94,8 @@ final class ApplePhotosStore: ObservableObject {
     private var availabilityTasks: [String: Task<ApplePhotosAsset.Availability, Never>] = [:]
     private var selection = ApplePhotosSelection()
     private var preheatedThumbnails: [ThumbnailPreheat] = []
+    private var loadCoordinator = ApplePhotosLoadCoordinator()
+    private var loadTask: Task<Void, Never>?
     private let maximumPreheatedThumbnailCount = 96
     @Published private(set) var displayLimit = ApplePhotosDisplayWindow.pageSize
 
@@ -133,6 +135,7 @@ final class ApplePhotosStore: ObservableObject {
     func refreshAuthorizationStatus() {
         authorization = ApplePhotosAuthorization(PHPhotoLibrary.authorizationStatus(for: .readWrite))
         guard !authorization.canRead else { return }
+        invalidateActiveLoad()
         clearTransientLibraryState()
         if state == .loaded { state = .idle }
     }
@@ -169,13 +172,13 @@ final class ApplePhotosStore: ObservableObject {
             state = .failed(authorization.title)
             return
         }
-        guard state != .loading else { return }
+        let request = loadCoordinator.begin(selectedAlbumID: selectedAlbumID)
+        loadTask?.cancel()
         state = .loading
-        let albumID = selectedAlbumID
-
-        Task.detached(priority: .utility) { [weak self] in
-            let result = Self.loadAssets(albumID: albumID)
-            await self?.apply(result)
+        loadTask = Task.detached(priority: .utility) { [weak self] in
+            let result = Self.loadAssets(albumID: request.albumID)
+            guard !Task.isCancelled else { return }
+            await self?.apply(result, for: request)
         }
     }
 
@@ -210,9 +213,9 @@ final class ApplePhotosStore: ObservableObject {
 
     /// 可见 Cell 进入屏幕时才预热，绝不对整个图库预热或请求全部缩略图。
     func preheatThumbnail(for assetID: String, targetSize: CGSize) {
-        guard let asset = photoKitAsset(id: assetID) else { return }
         let preheat = ThumbnailPreheat(assetID: assetID, targetSize: targetSize)
         guard !preheatedThumbnails.contains(preheat) else { return }
+        guard let asset = photoKitAsset(id: assetID) else { return }
         imageManager.startCachingImages(
             for: [asset],
             targetSize: targetSize,
@@ -340,7 +343,15 @@ final class ApplePhotosStore: ObservableObject {
         return resources[sourceIndex]
     }
 
-    private func apply(_ result: Result<LoadedLibrary, Error>) {
+    private func apply(_ result: Result<LoadedLibrary, Error>, for request: ApplePhotosLoadCoordinator.Request) {
+        guard loadCoordinator.shouldApply(
+            request,
+            selectedAlbumID: selectedAlbumID,
+            canRead: authorization.canRead
+        ) else {
+            return
+        }
+        loadTask = nil
         switch result {
         case let .success(library):
             imageManager.stopCachingImagesForAllAssets()
@@ -380,6 +391,12 @@ final class ApplePhotosStore: ObservableObject {
         selection.clear()
         selectedAssetIDs = []
         previewImage = nil
+    }
+
+    private func invalidateActiveLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadCoordinator.invalidate()
     }
 
     private func rebuildVisibleAssets(resetDisplayWindow: Bool = false) {

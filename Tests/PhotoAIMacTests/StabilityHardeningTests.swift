@@ -74,6 +74,22 @@ struct StabilityHardeningTests {
     }
 
     @Test
+    func thumbnailFailureTransitionsToFailedState() {
+        let state = ThumbnailViewState.completed(with: nil)
+
+        #expect(state.isFailed)
+        #expect(!state.isLoading)
+    }
+
+    @Test
+    func personPreviewThumbnailFailureDoesNotStayLoading() {
+        let state = ThumbnailViewState.completed(with: nil)
+
+        #expect(state.isFailed)
+        #expect(!state.isLoading)
+    }
+
+    @Test
     @MainActor
     func missingLUTProducesRecoverableLocalError() throws {
         let root = try temporaryDirectory()

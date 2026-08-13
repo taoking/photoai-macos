@@ -10,6 +10,14 @@
 - [x] 消除重复 ID 构建与全局缩略图完成通知，改为有界缓存和按 Cell 更新；离屏 Cell 会撤销其回调，避免待更新视图累积。
 - [x] 缓存 Apple Photos 筛选结果和进行中的缩略图/可用性请求；完成 7 轮实际侧栏切换、空闲进程采样、`swift test` 与 `xcodebuild test` 回归。
 
+### Phase 15 Final Fix（进行中）
+
+- [x] 确认 Final Fix 仅涵盖本地缩略图失败状态、快速相簿切换与预热顺序。
+- [x] 以 Cell 本地状态表现缩略图加载失败，且保持 `ThumbnailStore.completedKeys` 非 `@Published`。
+- [x] 为 Apple Photos 加入取消加 generation 双重保护，保证 Latest Selection Wins。
+- [x] 将缩略图预热判重移动到 `PHAsset` 查询之前，并新增纯模型回归测试。
+- [x] 完成 Xcode 27 build/test、本地 922 张 Catalog 的 10 轮侧栏性能回归，更新验证文档与 Draft PR #3；真实相簿切换因本轮调试包未授权而如实保留为待复测。
+
 ### Phase 15 — Apple Photos 系统相册接入（已实现；真实全库读取与渐进网格已验，剩余受控运行时复测待审）
 
 - [x] 从 `main` 建立独立 `agent/phase-15-apple-photos` 分支；不混入尚未合并的 Phase 14 PR #2。

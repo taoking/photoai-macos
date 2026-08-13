@@ -172,6 +172,30 @@ enum ApplePhotosDisplayWindow {
     }
 }
 
+/// 只接受当前相簿选择对应的异步加载结果。这个轻量协调器与 PhotoKit 解耦，
+/// 既可保护实际加载，也可在测试中验证快速切换相簿时的 latest-selection-wins 语义。
+struct ApplePhotosLoadCoordinator: Sendable {
+    struct Request: Equatable, Sendable {
+        let generation: UInt
+        let albumID: String?
+    }
+
+    private(set) var generation: UInt = 0
+
+    mutating func begin(selectedAlbumID: String?) -> Request {
+        generation &+= 1
+        return Request(generation: generation, albumID: selectedAlbumID)
+    }
+
+    mutating func invalidate() {
+        generation &+= 1
+    }
+
+    func shouldApply(_ request: Request, selectedAlbumID: String?, canRead: Bool) -> Bool {
+        canRead && request.generation == generation && request.albumID == selectedAlbumID
+    }
+}
+
 /// 选择状态只使用 `PHAsset.localIdentifier`，支持单选、Command 切换和 Shift 范围选择。
 struct ApplePhotosSelection: Equatable, Sendable {
     private(set) var selectedAssetIDs = Set<String>()

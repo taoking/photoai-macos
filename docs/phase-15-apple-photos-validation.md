@@ -1,6 +1,6 @@
 # Phase 15 验收记录 — Apple Photos 系统相册接入
 
-日期：2026-08-13
+日期：2026-08-14
 开发环境：macOS 27 Golden Gate beta / Xcode 27 beta（macOS 27 SDK）
 
 ## 设计与安全边界
@@ -19,13 +19,29 @@
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，62 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，62 tests / 15 suites；测试日志含既有 Xcode beta 环境警告，但没有失败。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，66 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，66 tests / 15 suites；测试日志含既有 Xcode beta 环境警告，但没有失败。 |
 | `rg -n "availability\\(for: asset\\)|isSynchronous|requestImage\\(|isNetworkAccessAllowed|requestData\\(|writeData\\(" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：没有初始全图库同步 iCloud 探测；浏览查询均禁止网络，只有显式导入资源的路径允许网络。 |
 | `rg -n "PHPhotoLibrary|PHAssetChangeRequest|PHAssetCollectionChangeRequest|performChanges" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：仅有授权状态/授权请求；无 PhotoKit 写入或修改 API。 |
 | `git diff --check` | 通过。 |
 
-自动测试覆盖：授权状态、初始 Store 不请求权限、资源模型、收藏/视频/RAW/日期筛选、单选/Command 多选/Shift 范围选择、冲突安全命名、RAW+JPEG、Live Photo、视频与回退资源规划、取消状态、导入结果汇总及双并发限制。
+自动测试覆盖：授权状态、初始 Store 不请求权限、资源模型、收藏/视频/RAW/日期筛选、单选/Command 多选/Shift 范围选择、冲突安全命名、RAW+JPEG、Live Photo、视频与回退资源规划、取消状态、导入结果汇总及双并发限制；以及本轮新增的本地缩略图失败状态、人物预览失败状态和快速相簿切换 Latest Selection Wins。
+
+## Final Fix 性能与竞态回归
+
+- 本地缩略图的完成状态只由可见订阅 Cell 的 `@State` 更新；`ThumbnailStore.completedKeys` 保持为非 `@Published`，不会因单张缩略图完成广播重绘整个网格。加载返回 `nil` 时，本地图库与人物预览均显示 `photo.badge.exclamationmark`，不再永久显示 `ProgressView`。
+- Apple Photos 相簿加载在每次请求时取消前一任务并递增 generation；只有 generation、当前 Picker 相簿和授权状态均匹配时才会应用结果。自动测试覆盖“B 慢、C 快、B 后返回”的过期结果丢弃。
+- Apple Photos 的预热判重现在发生在 `PHAsset` 查询之前；同一资产与尺寸已经预热时，不会再次执行不必要的 `PHAsset.fetchAssets(withLocalIdentifiers:)`。
+
+| 人工性能回归场景 | 真实结果 |
+| --- | --- |
+| 本地 Catalog | 922 张照片。 |
+| 连续侧栏切换 | 10 轮：搜索 → 人物 → 所有照片 → 清理 → Apple Photos → 搜索 → 人物 → 所有照片 → 清理 → 所有照片；所有目标页均保持响应。 |
+| 缩略图失败呈现 | PASS：人物页实际出现损坏/不可用缩略图时，显示稳定的 `photo.badge.exclamationmark` 占位，而非持续 Spinner。 |
+| 切换完成后 CPU | 0.0%。 |
+| 主线程采样 | 正常 AppKit/SwiftUI 事件循环，阻塞在等待下一事件；无持续 busy loop 或持续高 CPU。 |
+
+以上是当前测试机器、macOS 27 Golden Gate beta 与 922 张本地 Catalog 下的人工回归结果，不构成绝对性能承诺。
 
 ## 人工 UI 验证
 
@@ -44,9 +60,18 @@
 | iCloud-only 浏览不下载 | NOT RUN | 代码已明确关闭浏览网络；仍需真实仅云端项目复测。 |
 | 显式导入 iCloud 原件、取消、重名 | NOT RUN | 需要用户选择测试目录及受控相册素材后复测。 |
 | 导入后 Catalog Rescan / Phase 14 Archive | NOT RUN | Phase 14 PR #2 在本阶段基线的 `main` 上尚未合并；本实现完成 Catalog 接入，待合并后的 Archive 工作流复测。 |
+| 快速连续切换真实 Apple Photos 相簿 | NOT RUN | 本轮调试 App 当前为未授权状态；没有为自动化验收触发新的系统照片权限申请。最新选择优先逻辑由纯模型测试覆盖；待用户授权后按“全部照片 → 相簿 A → 相簿 B → 全部照片”复测 Picker、计数与 Grid 一致性。 |
 
 ## Gate
 
-Phase 15 Gate：**NOT READY**。
+### Phase 15 Code Gate：**PASS**
+
+Final Fix 代码条件已满足：损坏缩略图不再永久 Spinner、人物预览有稳定失败占位、`completedKeys` 未恢复全局发布、相簿请求使用取消与 generation 双重 Latest Selection Wins 保护、预热先判重、原有侧栏性能修复仍保留，且本地 build、Swift Testing、xcodebuild 测试和 `git diff --check` 均通过。
+
+### Phase 15 Product Gate：**NOT READY**
 
 已完成真实完整授权、35,214 项全库元数据读取、渐进网格和文件名筛选验证。Gate 仍未就绪：受限访问、iCloud-only 资源、真实预览/多选（被 macOS 27 beta 的自动化 Accessibility 管道阻断）、写入用户选择目录及随后 Archive 的运行时验证尚未完成。本阶段继续保持 Draft PR；没有合并 PR、没有创建 Release。
+
+### Phase 14 集成状态
+
+等待 PR #2 合并到 `main` 后再将 PR #3 rebase / merge 到最新 `main`，重新 build/test，并执行真实 Apple Photos 导入、Catalog Rescan、Phase 14 SHA-256、离线预览与重复检测复测。本轮未 cherry-pick 或合并 PR #2 的提交。

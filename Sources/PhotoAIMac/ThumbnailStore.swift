@@ -16,6 +16,30 @@ struct ThumbnailRequest: Sendable, Hashable {
     }
 }
 
+/// 单个缩略图订阅方自己的展示状态。它不发布到 `ThumbnailStore`，从而避免任意一张
+/// 缩略图完成时唤醒整个网格。
+enum ThumbnailViewState {
+    case idle
+    case loading
+    case loaded(NSImage)
+    case failed
+
+    static func completed(with image: NSImage?) -> ThumbnailViewState {
+        guard let image else { return .failed }
+        return .loaded(image)
+    }
+
+    var isLoading: Bool {
+        if case .loading = self { return true }
+        return false
+    }
+
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
 @MainActor
 final class ThumbnailStore: ObservableObject {
     private let memoryCache = NSCache<NSString, NSImage>()

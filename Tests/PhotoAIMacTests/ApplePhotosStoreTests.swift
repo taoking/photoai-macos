@@ -79,6 +79,27 @@ struct ApplePhotosStoreTests {
     }
 
     @Test
+    func rapidAlbumSwitchKeepsLatestSelection() {
+        var coordinator = ApplePhotosLoadCoordinator()
+        let albumB = coordinator.begin(selectedAlbumID: "album-b")
+        let albumC = coordinator.begin(selectedAlbumID: "album-c")
+
+        #expect(!coordinator.shouldApply(albumB, selectedAlbumID: "album-c", canRead: true))
+        #expect(coordinator.shouldApply(albumC, selectedAlbumID: "album-c", canRead: true))
+    }
+
+    @Test
+    func staleAlbumLoadResultCannotOverwriteLatestAlbum() {
+        var coordinator = ApplePhotosLoadCoordinator()
+        let albumB = coordinator.begin(selectedAlbumID: "album-b")
+        let albumC = coordinator.begin(selectedAlbumID: "album-c")
+
+        #expect(coordinator.shouldApply(albumC, selectedAlbumID: "album-c", canRead: true))
+        #expect(!coordinator.shouldApply(albumB, selectedAlbumID: "album-c", canRead: true))
+        #expect(!coordinator.shouldApply(albumC, selectedAlbumID: "album-c", canRead: false))
+    }
+
+    @Test
     func selectionSupportsSingleCommandAndShiftRange() {
         var selection = ApplePhotosSelection()
         let identifiers = ["a", "b", "c", "d", "e"]
