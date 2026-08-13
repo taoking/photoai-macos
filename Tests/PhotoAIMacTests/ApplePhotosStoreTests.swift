@@ -71,6 +71,14 @@ struct ApplePhotosStoreTests {
     }
 
     @Test
+    func displayWindowUsesBoundedPagesAndNeverExceedsFilteredResultCount() {
+        #expect(ApplePhotosDisplayWindow.pageSize == 240)
+        #expect(ApplePhotosDisplayWindow.nextLimit(currentLimit: 240, totalCount: 35_214) == 480)
+        #expect(ApplePhotosDisplayWindow.nextLimit(currentLimit: 480, totalCount: 481) == 481)
+        #expect(ApplePhotosDisplayWindow.nextLimit(currentLimit: 240, totalCount: 0) == 0)
+    }
+
+    @Test
     func selectionSupportsSingleCommandAndShiftRange() {
         var selection = ApplePhotosSelection()
         let identifiers = ["a", "b", "c", "d", "e"]

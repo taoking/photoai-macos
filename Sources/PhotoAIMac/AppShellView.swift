@@ -564,7 +564,7 @@ private struct ApplePhotosLibraryView: View {
             status
 
             if applePhotos.authorization.canRead, applePhotos.state == .loaded, !applePhotos.visibleAssets.isEmpty {
-                ApplePhotosAssetGrid(assets: applePhotos.visibleAssets)
+                ApplePhotosAssetGrid(assets: applePhotos.displayedAssets)
             } else if !applePhotos.authorization.canRead {
                 ContentUnavailableView(
                     "Apple Photos 是可选数据源",
@@ -602,6 +602,9 @@ private struct ApplePhotosLibraryView: View {
             applePhotos.refreshAuthorizationStatus()
         }
         .onChange(of: applePhotos.selectedAlbumID) { _, _ in reloadForExplicitBrowseChange() }
+        .onChange(of: applePhotos.browseFilter) { _, _ in applePhotos.resetDisplayedAssets() }
+        .onChange(of: applePhotos.dateFilter) { _, _ in applePhotos.resetDisplayedAssets() }
+        .onChange(of: applePhotos.searchText) { _, _ in applePhotos.resetDisplayedAssets() }
     }
 
     private var controls: some View {
@@ -749,6 +752,7 @@ private struct ApplePhotosLibraryView: View {
 
 private struct ApplePhotosAssetGrid: View {
     @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
     let assets: [ApplePhotosAsset]
 
     var body: some View {
@@ -758,10 +762,20 @@ private struct ApplePhotosAssetGrid: View {
                 spacing: 14
             ) {
                 ForEach(assets) { asset in
-                    ApplePhotosAssetCell(asset: asset, orderedAssetIDs: assets.map(\.id))
+                    ApplePhotosAssetCell(asset: asset)
                 }
             }
             .padding(24)
+
+            if applePhotos.hasMoreVisibleAssets {
+                VStack(spacing: 8) {
+                    Text("已显示 \(assets.count) / \(applePhotos.visibleAssets.count) 项")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("显示更多") { applePhotos.showMoreAssets() }
+                }
+                .padding(.bottom, 24)
+            }
         }
     }
 }
@@ -770,7 +784,6 @@ private struct ApplePhotosAssetCell: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     let asset: ApplePhotosAsset
-    let orderedAssetIDs: [String]
     @State private var thumbnail: NSImage?
     @State private var availability: ApplePhotosAsset.Availability = .unknown
 
@@ -783,7 +796,7 @@ private struct ApplePhotosAssetCell: View {
     var body: some View {
         let isSelected = applePhotos.selectedAssetIDs.contains(asset.id)
         Button {
-            applePhotos.select(assetID: asset.id, in: orderedAssetIDs)
+            applePhotos.select(assetID: asset.id)
         } label: {
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 8).fill(.quaternary)
@@ -821,7 +834,9 @@ private struct ApplePhotosAssetCell: View {
             availability = await loadedAvailability
         }
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        // 使用等价的可访问性值，保留选中状态的朗读，同时避免在大型网格中
+        // 对 Button trait 集合做动态变更。
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
     }
 
     @ViewBuilder

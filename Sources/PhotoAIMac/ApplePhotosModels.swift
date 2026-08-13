@@ -164,6 +164,14 @@ struct ApplePhotosAlbum: Identifiable, Hashable, Sendable {
     let estimatedAssetCount: Int
 }
 
+enum ApplePhotosDisplayWindow {
+    static let pageSize = 240
+
+    static func nextLimit(currentLimit: Int, totalCount: Int) -> Int {
+        min(max(0, totalCount), max(0, currentLimit) + pageSize)
+    }
+}
+
 /// 选择状态只使用 `PHAsset.localIdentifier`，支持单选、Command 切换和 Shift 范围选择。
 struct ApplePhotosSelection: Equatable, Sendable {
     private(set) var selectedAssetIDs = Set<String>()

@@ -83,6 +83,7 @@ final class ApplePhotosStore: ObservableObject {
     private var selection = ApplePhotosSelection()
     private var preheatedThumbnails: [ThumbnailPreheat] = []
     private let maximumPreheatedThumbnailCount = 96
+    @Published private(set) var displayLimit = ApplePhotosDisplayWindow.pageSize
 
     init() {
         // Xcode 27 SDK 中可读取图库的最低可用 access level 是 `readWrite`；本组件不会调用任何写 API。
@@ -96,6 +97,22 @@ final class ApplePhotosStore: ObservableObject {
                 && dateFilter.matches(asset)
                 && (normalizedSearch.isEmpty || asset.filename.localizedCaseInsensitiveContains(normalizedSearch))
         }
+    }
+
+    /// 网格只物化一个有界首屏，避免大图库在一次 SwiftUI / Accessibility 更新中
+    /// 生成数万个子视图。筛选仍针对完整内存元数据集执行。
+    var displayedAssets: [ApplePhotosAsset] {
+        Array(visibleAssets.prefix(displayLimit))
+    }
+
+    var hasMoreVisibleAssets: Bool {
+        visibleAssets.count > displayLimit
+    }
+
+    /// Shift 范围限定为当前已展示项目；其余项目可按需继续加载后再选择。
+    /// 顺序在 Store 中集中计算，避免每个网格 Cell 捕获完整 ID 列表。
+    private var displayedAssetIDs: [String] {
+        displayedAssets.map(\.id)
     }
 
     var selectedAsset: ApplePhotosAsset? {
@@ -157,10 +174,10 @@ final class ApplePhotosStore: ObservableObject {
         }
     }
 
-    func select(assetID: String, in orderedAssetIDs: [String], modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+    func select(assetID: String, modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
         selection.select(
             assetID: assetID,
-            in: orderedAssetIDs,
+            in: displayedAssetIDs,
             command: modifiers.contains(.command),
             shift: modifiers.contains(.shift)
         )
@@ -172,6 +189,18 @@ final class ApplePhotosStore: ObservableObject {
         selection.clear()
         selectedAssetIDs = []
         previewImage = nil
+    }
+
+    func showMoreAssets() {
+        guard hasMoreVisibleAssets else { return }
+        displayLimit = ApplePhotosDisplayWindow.nextLimit(
+            currentLimit: displayLimit,
+            totalCount: visibleAssets.count
+        )
+    }
+
+    func resetDisplayedAssets() {
+        displayLimit = ApplePhotosDisplayWindow.pageSize
     }
 
     /// 可见 Cell 进入屏幕时才预热，绝不对整个图库预热或请求全部缩略图。
@@ -272,6 +301,7 @@ final class ApplePhotosStore: ObservableObject {
             albums = library.albums
             assets = library.assets
             availabilityByAssetID = [:]
+            displayLimit = ApplePhotosDisplayWindow.pageSize
             selection.retain(Set(assets.map(\.id)))
             selectedAssetIDs = selection.selectedAssetIDs
             if selectedAssetIDs.count != 1 { previewImage = nil }
@@ -287,6 +317,7 @@ final class ApplePhotosStore: ObservableObject {
         albums = []
         assets = []
         availabilityByAssetID = [:]
+        displayLimit = ApplePhotosDisplayWindow.pageSize
         selection.clear()
         selectedAssetIDs = []
         previewImage = nil
