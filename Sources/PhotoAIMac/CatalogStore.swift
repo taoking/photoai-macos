@@ -14,10 +14,13 @@ final class CatalogStore: ObservableObject {
     @Published private(set) var searchQuery = ""
     @Published private(set) var searchInterpretation = SearchInterpretation.empty
     @Published private(set) var isInterpretingSearch = false
+    @Published private(set) var metadataUndoActionTitle: String?
 
     private var selectionAnchorID: UUID?
     private var queryCache: [CatalogQueryKey: [PhotoAsset]] = [:]
     private var duplicateAssetIDsCache: Set<UUID>?
+    private var assetIndexByID: [UUID: Int] = [:]
+    private var metadataUndoStack: [CatalogMetadataUndoOperation] = []
     private(set) var queryComputationCount = 0
 
     private let persistence: CatalogPersistence
@@ -30,6 +33,7 @@ final class CatalogStore: ObservableObject {
             let snapshot = try persistence.load()
             sources = snapshot.sources
             assets = snapshot.assets
+            rebuildAssetIndex()
         } catch {
             sources = []
             assets = []
@@ -41,6 +45,7 @@ final class CatalogStore: ObservableObject {
         persistence = CatalogPersistence(fileURL: storageURL)
         sources = snapshot.sources
         assets = snapshot.assets
+        rebuildAssetIndex()
     }
 
     deinit {
@@ -117,8 +122,9 @@ final class CatalogStore: ObservableObject {
         scanTasks[sourceID]?.cancel()
     }
 
-    func assets(for destination: SidebarDestination) -> [PhotoAsset] {
-        let cacheKey = CatalogQueryKey(destination: destination, filter: filter)
+    func assets(for destination: SidebarDestination, filter requestedFilter: LibraryFilter? = nil) -> [PhotoAsset] {
+        let selectedFilter = requestedFilter ?? filter
+        let cacheKey = CatalogQueryKey(destination: destination, filter: selectedFilter)
         if let cachedAssets = queryCache[cacheKey] {
             return cachedAssets
         }
@@ -142,8 +148,8 @@ final class CatalogStore: ObservableObject {
             destinationAssets = assets.filter { missingSourceIDs.contains($0.sourceID) }
         }
 
-        let duplicateAssetIDs = filter == .duplicates ? duplicateAssetIDs() : []
-        let filtered = destinationAssets.filter { filter.matches($0, duplicateAssetIDs: duplicateAssetIDs) }
+        let duplicateAssetIDs = selectedFilter == .duplicates ? duplicateAssetIDs() : []
+        let filtered = destinationAssets.filter { selectedFilter.matches($0, duplicateAssetIDs: duplicateAssetIDs) }
         let result: [PhotoAsset]
         if destination == .recentImports {
             result = filtered.sorted { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
@@ -157,28 +163,34 @@ final class CatalogStore: ObservableObject {
 
     var selectedAsset: PhotoAsset? {
         guard selectedAssetIDs.count == 1, let id = selectedAssetIDs.first else { return nil }
-        return assets.first(where: { $0.id == id })
+        return asset(withID: id)
     }
 
     var selectedAssets: [PhotoAsset] {
-        assets.filter { selectedAssetIDs.contains($0.id) }
+        selectedAssetIDs.compactMap(asset(withID:)).sorted { left, right in
+            (assetIndexByID[left.id] ?? .max) < (assetIndexByID[right.id] ?? .max)
+        }
     }
 
     func selectedAssets(orderedBy orderedAssetIDs: [UUID]) -> [PhotoAsset] {
-        let assetsByID = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
         return orderedAssetIDs.compactMap { id in
             guard selectedAssetIDs.contains(id) else { return nil }
-            return assetsByID[id]
+            return asset(withID: id)
         }
     }
 
     func asset(withID assetID: UUID) -> PhotoAsset? {
-        assets.first(where: { $0.id == assetID })
+        guard let index = assetIndexByID[assetID], assets.indices.contains(index) else { return nil }
+        return assets[index]
+    }
+
+    func assets(withIDs orderedAssetIDs: [UUID]) -> [PhotoAsset] {
+        orderedAssetIDs.compactMap(asset(withID:))
     }
 
     var selectionAnchorAsset: PhotoAsset? {
         guard let selectionAnchorID else { return nil }
-        return assets.first(where: { $0.id == selectionAnchorID })
+        return asset(withID: selectionAnchorID)
     }
 
     func thumbnailRequest(for asset: PhotoAsset) -> ThumbnailRequest? {
@@ -267,7 +279,7 @@ final class CatalogStore: ObservableObject {
     }
 
     func selectSingle(assetID: UUID) {
-        guard assets.contains(where: { $0.id == assetID }) else { return }
+        guard assetIndexByID[assetID] != nil else { return }
         selectedAssetIDs = [assetID]
         selectionAnchorID = assetID
     }
@@ -282,24 +294,53 @@ final class CatalogStore: ObservableObject {
         selectionAnchorID = orderedAssetIDs.first
     }
 
-    func setRating(_ rating: Int) {
+    @discardableResult
+    func setRating(_ rating: Int) -> Set<UUID> {
         setRating(rating, for: selectedAssetIDs)
     }
 
-    func setRating(_ rating: Int, for assetIDs: Set<UUID>) {
-        updateAssets(assetIDs) { asset in
+    @discardableResult
+    func setRating(_ rating: Int, for assetIDs: Set<UUID>) -> Set<UUID> {
+        performMetadataOperation(title: "评分", assetIDs: assetIDs) { asset in
             asset.rating = min(max(rating, 0), 5)
         }
     }
 
-    func setFlag(_ flag: PhotoFlag) {
+    @discardableResult
+    func setFlag(_ flag: PhotoFlag) -> Set<UUID> {
         setFlag(flag, for: selectedAssetIDs)
     }
 
-    func setFlag(_ flag: PhotoFlag, for assetIDs: Set<UUID>) {
-        updateAssets(assetIDs) { asset in
+    @discardableResult
+    func setFlag(_ flag: PhotoFlag, for assetIDs: Set<UUID>) -> Set<UUID> {
+        performMetadataOperation(title: "标记", assetIDs: assetIDs) { asset in
             asset.flag = flag
         }
+    }
+
+    @discardableResult
+    func applyCompareDecision(winnerID: UUID, loserID: UUID) -> Set<UUID> {
+        guard winnerID != loserID else { return [] }
+        return performMetadataOperation(title: "A/B 比较选择", assetIDs: [winnerID, loserID]) { asset in
+            asset.flag = asset.id == winnerID ? .pick : .reject
+        }
+    }
+
+    var canUndoMetadataOperation: Bool { !metadataUndoStack.isEmpty }
+
+    @discardableResult
+    func undoLastMetadataOperation() -> Set<UUID> {
+        guard let operation = metadataUndoStack.popLast() else { return [] }
+        var restoredIDs = Set<UUID>()
+        for snapshot in operation.snapshots {
+            guard let index = assetIndexByID[snapshot.assetID], assets.indices.contains(index) else { continue }
+            assets[index].rating = snapshot.rating
+            assets[index].flag = snapshot.flag
+            restoredIDs.insert(snapshot.assetID)
+        }
+        metadataUndoActionTitle = metadataUndoStack.last?.title
+        if !restoredIDs.isEmpty { persist() }
+        return restoredIDs
     }
 
     func setColorLabel(_ colorLabel: String, for assetIDs: Set<UUID>) {
@@ -411,6 +452,7 @@ final class CatalogStore: ObservableObject {
     func removeLocalRecords(assetIDs: Set<UUID>) {
         guard !assetIDs.isEmpty else { return }
         assets.removeAll { assetIDs.contains($0.id) }
+        rebuildAssetIndex()
         selectedAssetIDs.subtract(assetIDs)
         if let selectionAnchorID, assetIDs.contains(selectionAnchorID) {
             self.selectionAnchorID = nil
@@ -423,11 +465,7 @@ final class CatalogStore: ObservableObject {
 
     /// 智能选片只会在用户确认后调用此方法；它不会改动星级或 Reject 状态。
     func applyCullingPick(to assetIDs: Set<UUID>) {
-        guard !assetIDs.isEmpty else { return }
-        for index in assets.indices where assetIDs.contains(assets[index].id) {
-            assets[index].flag = .pick
-        }
-        persist()
+        setFlag(.pick, for: assetIDs)
     }
 
     func updateOCRText(_ text: String, for assetID: UUID) {
@@ -558,6 +596,7 @@ final class CatalogStore: ObservableObject {
         assets.removeAll { $0.sourceID == sourceID }
         assets.append(contentsOf: merged)
         assets.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        rebuildAssetIndex()
         selectedAssetIDs.formIntersection(Set(assets.map(\.id)))
     }
 
@@ -579,10 +618,48 @@ final class CatalogStore: ObservableObject {
 
     private func updateAssets(_ assetIDs: Set<UUID>, _ update: (inout PhotoAsset) -> Void) {
         guard !assetIDs.isEmpty else { return }
-        for index in assets.indices where assetIDs.contains(assets[index].id) {
+        for assetID in assetIDs {
+            guard let index = assetIndexByID[assetID], assets.indices.contains(index) else { continue }
             update(&assets[index])
         }
         persist()
+    }
+
+    private func performMetadataOperation(
+        title: String,
+        assetIDs: Set<UUID>,
+        update: (inout PhotoAsset) -> Void
+    ) -> Set<UUID> {
+        guard !assetIDs.isEmpty else { return [] }
+        var snapshots: [CatalogMetadataSnapshot] = []
+        var changedIDs = Set<UUID>()
+
+        for assetID in assetIDs {
+            guard let index = assetIndexByID[assetID], assets.indices.contains(index) else { continue }
+            let original = assets[index]
+            var updated = original
+            update(&updated)
+            guard original.rating != updated.rating || original.flag != updated.flag else { continue }
+            snapshots.append(
+                CatalogMetadataSnapshot(assetID: assetID, rating: original.rating, flag: original.flag)
+            )
+            assets[index].rating = updated.rating
+            assets[index].flag = updated.flag
+            changedIDs.insert(assetID)
+        }
+
+        guard !snapshots.isEmpty else { return [] }
+        metadataUndoStack.append(CatalogMetadataUndoOperation(title: title, snapshots: snapshots))
+        if metadataUndoStack.count > 100 {
+            metadataUndoStack.removeFirst(metadataUndoStack.count - 100)
+        }
+        metadataUndoActionTitle = title
+        persist()
+        return changedIDs
+    }
+
+    private func rebuildAssetIndex() {
+        assetIndexByID = Dictionary(uniqueKeysWithValues: assets.enumerated().map { ($0.element.id, $0.offset) })
     }
 
     private func invalidateQueryCache() {
@@ -617,6 +694,17 @@ private struct DuplicateIndexKey: Hashable {
     let width: Int?
     let height: Int?
     let fileExtension: String
+}
+
+private struct CatalogMetadataSnapshot: Sendable {
+    let assetID: UUID
+    let rating: Int
+    let flag: PhotoFlag
+}
+
+private struct CatalogMetadataUndoOperation: Sendable {
+    let title: String
+    let snapshots: [CatalogMetadataSnapshot]
 }
 
 private enum CatalogStoreError: Error {

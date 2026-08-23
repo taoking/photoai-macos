@@ -38,24 +38,48 @@ enum OriginalPhotoExportState: Equatable, Sendable {
 
 struct OriginalPhotoExportPlan: Hashable, Sendable {
     let request: OriginalPhotoExportRequest
+    let destinationRootURL: URL
     let destinationURL: URL
+}
+
+enum OriginalPhotoExportLayout: Sendable {
+    case flat
+    case preserveDirectoryStructure
 }
 
 enum OriginalPhotoExportPlanner {
     static func plans(
         requests: [OriginalPhotoExportRequest],
         destinationURL: URL,
-        existingFilenames: [String]
+        existingFilenames: [String],
+        layout: OriginalPhotoExportLayout = .flat
     ) -> [OriginalPhotoExportPlan] {
-        var occupiedNames = Set(existingFilenames.map(normalizedFilename))
+        var occupiedNamesByDirectory: [String: Set<String>] = [:]
+        for existingPath in existingFilenames {
+            let directory = normalizedDirectory((existingPath as NSString).deletingLastPathComponent)
+            occupiedNamesByDirectory[directory, default: []].insert(
+                normalizedFilename((existingPath as NSString).lastPathComponent)
+            )
+        }
+
         return requests.map { request in
+            let relativeDirectory = layout == .preserveDirectoryStructure
+                ? safeRelativeDirectory(for: request.relativePath)
+                : ""
+            let directoryKey = normalizedDirectory(relativeDirectory)
+            var occupiedNames = occupiedNamesByDirectory[directoryKey, default: []]
             let filename = conflictSafeFilename(
                 preferredFilename: request.filename,
                 occupiedFilenames: &occupiedNames
             )
+            occupiedNamesByDirectory[directoryKey] = occupiedNames
+            let targetDirectory = relativeDirectory.isEmpty
+                ? destinationURL
+                : destinationURL.appendingPathComponent(relativeDirectory, isDirectory: true)
             return OriginalPhotoExportPlan(
                 request: request,
-                destinationURL: destinationURL.appendingPathComponent(filename, isDirectory: false)
+                destinationRootURL: destinationURL,
+                destinationURL: targetDirectory.appendingPathComponent(filename, isDirectory: false)
             )
         }
     }
@@ -80,6 +104,20 @@ enum OriginalPhotoExportPlanner {
 
     private static func normalizedFilename(_ filename: String) -> String {
         filename.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private static func normalizedDirectory(_ directory: String) -> String {
+        let normalized = directory == "." ? "" : directory
+        return normalized.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private static func safeRelativeDirectory(for relativePath: String) -> String {
+        guard !relativePath.hasPrefix("/") else { return "" }
+        let directory = (relativePath as NSString).deletingLastPathComponent
+        guard directory != ".", !directory.isEmpty else { return "" }
+        let components = directory.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.contains(where: { $0 == "." || $0 == ".." }) else { return "" }
+        return components.joined(separator: "/")
     }
 }
 
@@ -109,22 +147,36 @@ final class OriginalPhotoExportStore: ObservableObject {
         return components.joined(separator: " · ")
     }
 
-    func chooseDestinationAndStart(assets: [PhotoAsset], catalog: CatalogStore) {
+    func chooseDestinationAndStart(
+        assets: [PhotoAsset],
+        catalog: CatalogStore,
+        preserveDirectoryStructure: Bool = false
+    ) {
         guard !assets.isEmpty, !state.isActive else { return }
         let panel = NSOpenPanel()
         panel.title = "导出原始照片"
-        panel.message = "选择目标文件夹。PhotoAI Mac 会复制原文件并保留扩展名，不会覆盖已有文件。"
+        panel.message = preserveDirectoryStructure
+            ? "选择目标文件夹。PhotoAI Mac 会复制原文件、保留来源目录结构和扩展名，不会覆盖已有文件。"
+            : "选择目标文件夹。PhotoAI Mac 会复制原文件并保留扩展名，不会覆盖已有文件。"
         panel.prompt = "导出到此文件夹"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
         let requests = assets.compactMap(catalog.originalExportRequest)
-        start(requests: requests, destinationURL: destinationURL)
+        start(
+            requests: requests,
+            destinationURL: destinationURL,
+            layout: preserveDirectoryStructure ? .preserveDirectoryStructure : .flat
+        )
     }
 
-    func startForTesting(requests: [OriginalPhotoExportRequest], destinationURL: URL) {
-        start(requests: requests, destinationURL: destinationURL)
+    func startForTesting(
+        requests: [OriginalPhotoExportRequest],
+        destinationURL: URL,
+        layout: OriginalPhotoExportLayout = .flat
+    ) {
+        start(requests: requests, destinationURL: destinationURL, layout: layout)
     }
 
     func cancel() {
@@ -133,13 +185,18 @@ final class OriginalPhotoExportStore: ObservableObject {
         exportTask?.cancel()
     }
 
-    private func start(requests: [OriginalPhotoExportRequest], destinationURL: URL) {
+    private func start(
+        requests: [OriginalPhotoExportRequest],
+        destinationURL: URL,
+        layout: OriginalPhotoExportLayout
+    ) {
         guard !requests.isEmpty, !state.isActive else { return }
-        let existingNames = (try? FileManager.default.contentsOfDirectory(atPath: destinationURL.path)) ?? []
+        let existingNames = existingRelativePaths(at: destinationURL, recursively: layout == .preserveDirectoryStructure)
         let plans = OriginalPhotoExportPlanner.plans(
             requests: requests,
             destinationURL: destinationURL,
-            existingFilenames: existingNames
+            existingFilenames: existingNames,
+            layout: layout
         )
 
         self.destinationURL = destinationURL
@@ -208,7 +265,7 @@ final class OriginalPhotoExportStore: ObservableObject {
             bookmarkDataIsStale: &isStale
         )) ?? URL(fileURLWithPath: request.lastKnownRootPath)
         let hasSecurityAccess = rootURL.startAccessingSecurityScopedResource()
-        let destinationRootURL = plan.destinationURL.deletingLastPathComponent()
+        let destinationRootURL = plan.destinationRootURL
         let hasDestinationAccess = destinationRootURL.startAccessingSecurityScopedResource()
         defer {
             if hasSecurityAccess { rootURL.stopAccessingSecurityScopedResource() }
@@ -222,7 +279,35 @@ final class OriginalPhotoExportStore: ObservableObject {
         guard !FileManager.default.fileExists(atPath: plan.destinationURL.path) else {
             throw CocoaError(.fileWriteFileExists)
         }
+        let standardizedRootPath = destinationRootURL.standardizedFileURL.path + "/"
+        guard plan.destinationURL.standardizedFileURL.path.hasPrefix(standardizedRootPath) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        try FileManager.default.createDirectory(
+            at: plan.destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try FileManager.default.copyItem(at: sourceURL, to: plan.destinationURL)
+    }
+
+    private func existingRelativePaths(at rootURL: URL, recursively: Bool) -> [String] {
+        guard recursively else {
+            return (try? FileManager.default.contentsOfDirectory(atPath: rootURL.path)) ?? []
+        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return enumerator.compactMap { value -> String? in
+            guard let url = value as? URL,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                return nil
+            }
+            return String(url.path.dropFirst(rootURL.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
     }
 
     private func recordCurrentFilename(_ filename: String) {
