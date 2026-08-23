@@ -2,7 +2,18 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 16 — 照片管理与导出工作流
+## 当前阶段：Phase 17 — 摄影照片筛选工作流
+
+### Phase 17 — 摄影照片筛选工作流（进行中）
+
+- [x] 梳理 Phase 16 Viewer、Catalog Index、选择模型和原文件导出能力，确认 Phase 17 不进入照片编辑范围。
+- [x] 实现保持图库上下文的 Culling Mode、缓存预览、快捷键导航与单张评分/标记。
+- [x] 实现 A/B Compare View 的状态、同步缩放/移动、元数据展示与快速选择。
+- [x] 基于拍摄时间窗口和文件连续性建立非 AI Photo Group，并增加总数、Pick、五星、Reject、未处理统计。
+- [x] 扩展原文件导出：Pick、五星、当前筛选结果，并可选保持来源目录结构且绝不覆盖目标。
+- [x] 为评分、Pick/Reject 和批量操作增加 Command+Z 撤销，并避免触发磁盘重扫或 UI 线程 RAW 读取。
+- [x] 补齐提示词指定测试与 100,000 项 Catalog 性能门禁，完成真实 UI 验证并记录 PASS / NOT RUN / BLOCKED。
+- [ ] 更新 README 和 `docs/phase-17-culling-validation.md`，完成提交、推送和堆叠 Draft PR 后停止。
 
 ### Phase 16 — 照片管理与导出工作流（已完成）
 
