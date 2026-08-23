@@ -1,6 +1,6 @@
 # Phase 15 验收记录 — Apple Photos 系统相册接入
 
-日期：2026-08-14
+日期：2026-08-24
 开发环境：macOS 27 Golden Gate beta / Xcode 27 beta（macOS 27 SDK）
 
 ## 设计与安全边界
@@ -19,8 +19,8 @@
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，66 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，66 tests / 15 suites；测试日志含既有 Xcode beta 环境警告，但没有失败。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，67 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，67 tests / 15 suites；测试日志含既有 Xcode beta 环境警告，但没有失败。 |
 | `rg -n "availability\\(for: asset\\)|isSynchronous|requestImage\\(|isNetworkAccessAllowed|requestData\\(|writeData\\(" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：没有初始全图库同步 iCloud 探测；浏览查询均禁止网络，只有显式导入资源的路径允许网络。 |
 | `rg -n "PHPhotoLibrary|PHAssetChangeRequest|PHAssetCollectionChangeRequest|performChanges" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：仅有授权状态/授权请求；无 PhotoKit 写入或修改 API。 |
 | `git diff --check` | 通过。 |
@@ -42,6 +42,14 @@
 | 主线程采样 | 正常 AppKit/SwiftUI 事件循环，阻塞在等待下一事件；无持续 busy loop 或持续高 CPU。 |
 
 以上是当前测试机器、macOS 27 Golden Gate beta 与 922 张本地 Catalog 下的人工回归结果，不构成绝对性能承诺。
+
+## 编辑器返回图库回归
+
+- 复核本机 `catalog.json`：仍有 922 项，两个本地来源均为 `ready` 且目录存在；问题不是 Catalog 数据丢失。
+- 以系统 ImageIO（`sips`）直接解码代表性 JPEG 与 Sony ARW，二者均返回 `4608 × 3072`，确认源文件继续可读。
+- 编辑器改为覆盖仍存活的图库视图树，而不是替换整个详情区域；完成调色后，现有的可见 Cell、缩略图订阅和内存缓存不会被销毁重建。
+- 新增 `editingRoundTripPreservesTheCurrentLibraryDestination`，确保进入与退出编辑器不会改变“所有照片”目标页。
+- 新构建已作为标准 `.app` 重新启动。当前自动化桌面控制环境缺少其所需的授权交互接口，无法安全执行真实点击式“编辑 → 调色 → 完成”回归；该 UI 往返仍应在可用的辅助功能控制环境中复测，未标记为已人工通过。
 
 ## 人工 UI 验证
 

@@ -25,6 +25,21 @@ struct AppShellModelTests {
     }
 
     @Test
+    @MainActor
+    func editingRoundTripPreservesTheCurrentLibraryDestination() {
+        let shell = AppShellModel()
+        shell.select(.allPhotos)
+
+        shell.presentEditor()
+        #expect(shell.isEditorPresented)
+        #expect(shell.selection == .allPhotos)
+
+        shell.dismissEditor()
+        #expect(!shell.isEditorPresented)
+        #expect(shell.selection == .allPhotos)
+    }
+
+    @Test
     func coversAllPlannedSidebarDestinations() {
         let titles = Set(SidebarDestination.allCases.map(\.title))
 

@@ -14,9 +14,7 @@ struct AppShellView: View {
             SidebarView(selection: $shell.selection)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } detail: {
-            if shell.isEditorPresented {
-                EditorView()
-            } else {
+            ZStack {
                 HSplitView {
                     LibraryPlaceholderView()
 
@@ -30,6 +28,18 @@ struct AppShellView: View {
                         }
                             .frame(minWidth: 250, idealWidth: 300, maxWidth: 380)
                     }
+                }
+                .allowsHitTesting(!shell.isEditorPresented)
+                .accessibilityHidden(shell.isEditorPresented)
+
+                // 让图库在编辑期间留在同一视图树中。此前用条件分支替换整个 detail，
+                // 返回时会一次性销毁并重建所有可见 LazyVGrid Cell；在快速切换或调色
+                // 后这会让缩略图订阅错过更新，看起来像“所有照片空白”。编辑器覆盖在
+                // 保留的图库之上，完成后可立即显示已有缩略图状态与内存缓存。
+                if shell.isEditorPresented {
+                    EditorView()
+                        .background(.background)
+                        .accessibilityAddTraits(.isModal)
                 }
             }
         }
