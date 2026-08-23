@@ -1315,6 +1315,11 @@ private struct CatalogAssetCell: View {
     var body: some View {
         let request = catalog.thumbnailRequest(for: asset)
         let isSelected = catalog.selectedAssetIDs.contains(asset.id)
+        // 编辑器覆盖层关闭时，macOS 有机会保留 Cell 却丢失它的局部 State。
+        // 缓存是缩略图的权威来源；在展示层直接兜底可避免这类 Cell 把已解码的
+        // 图像误画成空白占位符。`thumbnailRefreshGeneration` 仍负责为缓存未命中
+        // 的可见 Cell 重新接入已有加载任务。
+        let displayedThumbnail = thumbnailState.loadedImage ?? request.flatMap(thumbnails.image(for:))
 
         Button {
             catalog.select(assetID: asset.id, in: orderedAssetIDs)
@@ -1324,8 +1329,8 @@ private struct CatalogAssetCell: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(.quaternary)
 
-                    if case let .loaded(thumbnail) = thumbnailState {
-                        Image(nsImage: thumbnail)
+                    if let displayedThumbnail {
+                        Image(nsImage: displayedThumbnail)
                             .resizable()
                             .interpolation(.medium)
                             .aspectRatio(contentMode: .fill)

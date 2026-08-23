@@ -19,8 +19,8 @@
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，69 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，69 tests / 15 suites；测试日志含既有 Xcode beta E5/运行时警告，但没有失败。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，70 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，70 tests / 15 suites；测试日志含既有 Xcode beta E5/运行时警告，但没有失败。 |
 | `rg -n "availability\\(for: asset\\)|isSynchronous|requestImage\\(|isNetworkAccessAllowed|requestData\\(|writeData\\(" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：没有初始全图库同步 iCloud 探测；浏览查询均禁止网络，只有显式导入资源的路径允许网络。 |
 | `rg -n "PHPhotoLibrary|PHAssetChangeRequest|PHAssetCollectionChangeRequest|performChanges" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：仅有授权状态/授权请求；无 PhotoKit 写入或修改 API。 |
 | `git diff --check` | 通过。 |
@@ -50,8 +50,9 @@
 - 编辑器改为覆盖仍存活的图库视图树，而不是替换整个详情区域；完成调色后，现有的可见 Cell、缩略图订阅和内存缓存不会被销毁重建。
 - 新增 `editingRoundTripPreservesTheCurrentLibraryDestination`，确保进入与退出编辑器不会改变“所有照片”目标页。
 - 编辑器退出时，`ThumbnailStore` 只递增一次 `visibleSubscriberGeneration`；仍可见的 `CatalogAssetCell` 会从内存缓存恢复，或重新订阅已经在跑的解码请求。这针对 macOS beta 上覆盖层退出后可能遗漏 `onAppear` 的情况，且没有把每张缩略图完成事件恢复为 `@Published` 全局刷新。
+- `CatalogAssetCell` 绘制时也直接检查内存缓存；若 macOS beta 在覆盖层切换中丢失 Cell 的局部 `@State`，已解码缩略图仍会立即显示，而不会退化为空白占位。测试覆盖已加载状态保留其图像供该展示回退路径使用。
 - 侧边栏改为明确的返回导航：编辑器打开时选择任一目标页会退出编辑器。新增模型测试覆盖该语义，并测试一次编辑器返回只发出一次可见缩略图刷新信号。
-- 新构建已作为标准 `.app` 重新启动。当前自动化桌面控制环境缺少其所需的授权交互接口，无法安全执行真实点击式“编辑 → 调色 → 完成”回归；该 UI 往返仍应在可用的辅助功能控制环境中复测，未标记为已人工通过。
+- 使用本地辅助功能控制完成真实 `DSC01872.JPG` 的“选择 → 编辑器 → 完成”往返；回到 922 项“所有照片”网格后，可见 JPEG、RAW 缩略图均正常显示，选中状态与来源元数据仍在。该验证未请求或修改 Apple Photos 权限。
 
 ## 人工 UI 验证
 

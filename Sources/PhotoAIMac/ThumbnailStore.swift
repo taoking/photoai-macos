@@ -38,6 +38,14 @@ enum ThumbnailViewState {
         if case .failed = self { return true }
         return false
     }
+
+    /// 保留已经交给 Cell 的图像。界面恢复时，Cell 还会优先检查
+    /// `ThumbnailStore` 的缓存：即使 SwiftUI 丢失了这份局部 `@State`，也不应
+    /// 把一张已缓存的照片重新画成空白占位符。
+    var loadedImage: NSImage? {
+        guard case let .loaded(image) = self else { return nil }
+        return image
+    }
 }
 
 @MainActor

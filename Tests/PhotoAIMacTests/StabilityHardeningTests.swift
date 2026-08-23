@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import PhotoAIMac
@@ -79,6 +80,15 @@ struct StabilityHardeningTests {
 
         #expect(state.isFailed)
         #expect(!state.isLoading)
+        #expect(state.loadedImage == nil)
+    }
+
+    @Test
+    func loadedThumbnailStateRetainsItsImageForDisplayFallback() {
+        let image = NSImage(size: NSSize(width: 12, height: 8))
+        let state = ThumbnailViewState.completed(with: image)
+
+        #expect(state.loadedImage === image)
     }
 
     @Test
