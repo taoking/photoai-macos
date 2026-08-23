@@ -9,6 +9,7 @@ struct AppShellView: View {
     @EnvironmentObject private var cleanup: CleanupWorkflowStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
+    @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
 
     var body: some View {
         NavigationSplitView {
@@ -38,14 +39,18 @@ struct AppShellView: View {
                             .frame(minWidth: 250, idealWidth: 300, maxWidth: 380)
                     }
                 }
-                .allowsHitTesting(!shell.isEditorPresented)
-                .accessibilityHidden(shell.isEditorPresented)
+                .allowsHitTesting(!shell.isEditorPresented && !shell.isPhotoViewerPresented)
+                .accessibilityHidden(shell.isEditorPresented || shell.isPhotoViewerPresented)
 
                 // 让图库在编辑期间留在同一视图树中。此前用条件分支替换整个 detail，
                 // 返回时会一次性销毁并重建所有可见 LazyVGrid Cell；在快速切换或调色
                 // 后这会让缩略图订阅错过更新，看起来像“所有照片空白”。编辑器覆盖在
                 // 保留的图库之上，完成后可立即显示已有缩略图状态与内存缓存。
-                if shell.isEditorPresented {
+                if shell.isPhotoViewerPresented {
+                    PhotoViewerView()
+                        .background(.background)
+                        .accessibilityAddTraits(.isModal)
+                } else if shell.isEditorPresented {
                     EditorView()
                         .background(.background)
                         .accessibilityAddTraits(.isModal)
@@ -99,6 +104,14 @@ struct AppShellView: View {
                 .pickerStyle(.menu)
 
                 Button {
+                    presentSelectedPhotoViewer()
+                } label: {
+                    Label("大图预览", systemImage: "rectangle.inset.filled.and.person.filled")
+                }
+                .disabled(!canPresentSelectedPhotoViewer)
+                .help("大图预览选中照片 (Space)")
+
+                Button {
                     shell.toggleInspector()
                 } label: {
                     Label("显示检查器", systemImage: "sidebar.right")
@@ -114,6 +127,41 @@ struct AppShellView: View {
                 .help("编辑选中的 JPEG、HEIF 或 RAW 照片 (E)")
 
                 Menu {
+                    Menu("批量评分") {
+                        Button("未评分") { catalog.setRating(0) }
+                        ForEach(1...5, id: \.self) { rating in
+                            Button("\(rating) 星") { catalog.setRating(rating) }
+                        }
+                    }
+                    .disabled(catalog.selectedAssetIDs.isEmpty)
+
+                    Button("标记为 Pick") { catalog.setFlag(.pick) }
+                        .disabled(catalog.selectedAssetIDs.isEmpty)
+                    Button("标记为 Reject") { catalog.setFlag(.reject) }
+                        .disabled(catalog.selectedAssetIDs.isEmpty)
+                    Button("取消标记") { catalog.setFlag(.none) }
+                        .disabled(catalog.selectedAssetIDs.isEmpty)
+
+                    Divider()
+
+                    Button("导出所选原文件…") {
+                        originalExporter.chooseDestinationAndStart(
+                            assets: catalog.selectedAssets(orderedBy: visibleCatalogAssets.map(\.id)),
+                            catalog: catalog
+                        )
+                    }
+                    .disabled(originalExporter.state.isActive || catalog.selectedAssetIDs.isEmpty)
+
+                    Button("导出当前筛选结果…") {
+                        originalExporter.chooseDestinationAndStart(
+                            assets: visibleCatalogAssets,
+                            catalog: catalog
+                        )
+                    }
+                    .disabled(originalExporter.state.isActive || visibleCatalogAssets.isEmpty)
+
+                    Divider()
+
                     Button("复制调整") {
                         if let asset = catalog.selectionAnchorAsset ?? catalog.selectedAsset {
                             batch.copyAdjustments(from: asset, catalog: catalog)
@@ -157,7 +205,7 @@ struct AppShellView: View {
                 } label: {
                     Label("批处理", systemImage: "square.on.square")
                 }
-                .disabled(catalog.selectedAssetIDs.isEmpty)
+                .disabled(shell.selection == .applePhotos || (catalog.selectedAssetIDs.isEmpty && visibleCatalogAssets.isEmpty))
             }
         }
     }
@@ -166,6 +214,30 @@ struct AppShellView: View {
         let assets = catalog.selectedAssets.filter(\.supportsEditing)
         batch.chooseDestinationAndStart(assets: assets, preset: preset) { asset in
             catalog.renderRequest(for: asset, lut: luts.renderRecipe(for: catalog.recipe(for: asset)))
+        }
+    }
+
+    private var visibleCatalogAssets: [PhotoAsset] {
+        catalog.assets(for: shell.selection)
+    }
+
+    private var canPresentSelectedPhotoViewer: Bool {
+        shell.selection == .applePhotos
+            ? applePhotos.selectedAsset != nil
+            : (catalog.selectionAnchorAsset ?? catalog.selectedAsset) != nil
+    }
+
+    private func presentSelectedPhotoViewer() {
+        if shell.selection == .applePhotos, let asset = applePhotos.selectedAsset {
+            shell.presentPhotoViewer(
+                item: .applePhotos(asset.id),
+                in: applePhotos.displayedAssets.map { .applePhotos($0.id) }
+            )
+        } else if let asset = catalog.selectionAnchorAsset ?? catalog.selectedAsset {
+            shell.presentPhotoViewer(
+                item: .catalog(asset.id),
+                in: visibleCatalogAssets.map { .catalog($0.id) }
+            )
         }
     }
 }
@@ -242,6 +314,7 @@ private struct LibraryPlaceholderView: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var batch: BatchWorkflowStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
+    @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
 
     var body: some View {
         // 保持同一次 render 中的本地 Catalog 结果一致，避免标题、空态判断和网格各自
@@ -297,6 +370,29 @@ private struct LibraryPlaceholderView: View {
                     Spacer()
                     if batch.state == .running || batch.state == .cancelling {
                         Button("取消") { batch.cancel() }
+                            .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                Divider()
+            }
+
+            if let progress = originalExporter.progressDescription {
+                HStack(spacing: 8) {
+                    if originalExporter.state.isActive {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: originalExporter.failures.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
+                            .foregroundStyle(originalExporter.failures.isEmpty ? .green : .orange)
+                    }
+                    Text(progress)
+                        .font(.footnote)
+                        .lineLimit(1)
+                    Spacer()
+                    if originalExporter.state.isActive {
+                        Button("取消") { originalExporter.cancel() }
                             .controlSize(.small)
                     }
                 }
@@ -901,7 +997,14 @@ private struct ApplePhotosAssetCell: View {
     var body: some View {
         let isSelected = applePhotos.selectedAssetIDs.contains(asset.id)
         Button {
-            applePhotos.select(assetID: asset.id)
+            let modifiers = NSEvent.modifierFlags
+            applePhotos.select(assetID: asset.id, modifiers: modifiers)
+            if !modifiers.contains(.command), !modifiers.contains(.shift) {
+                shell.presentPhotoViewer(
+                    item: .applePhotos(asset.id),
+                    in: applePhotos.displayedAssets.map { .applePhotos($0.id) }
+                )
+            }
         } label: {
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 8).fill(.quaternary)
@@ -989,6 +1092,374 @@ private struct ApplePhotosAssetCell: View {
         [asset.filename, asset.mediaType.title, availability.title, asset.isRAW ? "RAW" : nil, asset.isLivePhoto ? "Live Photo" : nil]
             .compactMap { $0 }
             .joined(separator: "，")
+    }
+}
+
+private struct PhotoViewerView: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+    @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
+    @EnvironmentObject private var applePhotosImporter: ApplePhotosImportCoordinator
+    @FocusState private var hasKeyboardFocus: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            viewerToolbar
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            viewerContent
+                .layoutPriority(1)
+            Divider()
+            metadataContent
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .id(shell.photoViewerItem)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .focusable()
+        .focused($hasKeyboardFocus)
+        .onAppear { hasKeyboardFocus = true }
+        .onExitCommand {
+            shell.dismissPhotoViewer()
+        }
+        .onKeyPress(.escape) {
+            shell.dismissPhotoViewer()
+            return .handled
+        }
+        .onKeyPress(.space) {
+            shell.dismissPhotoViewer()
+            return .handled
+        }
+        .onKeyPress(.leftArrow) {
+            navigate(offset: -1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            navigate(offset: 1)
+            return .handled
+        }
+    }
+
+    private var viewerToolbar: some View {
+        HStack(spacing: 10) {
+            Button {
+                shell.dismissPhotoViewer()
+            } label: {
+                Label("返回", systemImage: "chevron.backward")
+            }
+
+            Divider().frame(height: 24)
+
+            Button { navigate(offset: -1) } label: {
+                Label("上一张", systemImage: "chevron.left")
+            }
+            .disabled(!shell.canMovePhotoViewer(offset: -1))
+
+            Button { navigate(offset: 1) } label: {
+                Label("下一张", systemImage: "chevron.right")
+            }
+            .disabled(!shell.canMovePhotoViewer(offset: 1))
+
+            Spacer()
+
+            switch shell.photoViewerItem {
+            case let .catalog(assetID):
+                if let asset = catalog.asset(withID: assetID) {
+                    PhotoViewerRatingControl(asset: asset)
+
+                    Button {
+                        catalog.setFlag(.pick, for: [asset.id])
+                    } label: {
+                        Label("Pick", systemImage: "flag.fill")
+                    }
+                    .tint(asset.flag == .pick ? .green : nil)
+
+                    Button {
+                        catalog.setFlag(.reject, for: [asset.id])
+                    } label: {
+                        Label("Reject", systemImage: "xmark.circle.fill")
+                    }
+                    .tint(asset.flag == .reject ? .red : nil)
+
+                    Button {
+                        catalog.setFlag(.none, for: [asset.id])
+                    } label: {
+                        Label("取消标记", systemImage: "flag.slash")
+                    }
+
+                    Divider().frame(height: 24)
+
+                    Button {
+                        originalExporter.chooseDestinationAndStart(assets: [asset], catalog: catalog)
+                    } label: {
+                        Label("导出", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(originalExporter.state.isActive)
+                }
+            case let .applePhotos(assetID):
+                if applePhotos.assets.contains(where: { $0.id == assetID }) {
+                    Text("导入 Catalog 后可评分与标记")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        applePhotosImporter.chooseDestinationAndImport(
+                            assetIDs: [assetID],
+                            store: applePhotos,
+                            catalog: catalog
+                        )
+                    } label: {
+                        Label("导出原始资源…", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(applePhotosImporter.state.isActive)
+                }
+            case nil:
+                EmptyView()
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .frame(minHeight: 50)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var viewerContent: some View {
+        switch shell.photoViewerItem {
+        case let .catalog(assetID):
+            if let asset = catalog.asset(withID: assetID) {
+                LocalPhotoViewerMedia(asset: asset)
+            } else {
+                missingItem
+            }
+        case let .applePhotos(assetID):
+            if let asset = applePhotos.assets.first(where: { $0.id == assetID }) {
+                ApplePhotosViewerMedia(asset: asset)
+            } else {
+                missingItem
+            }
+        case nil:
+            missingItem
+        }
+    }
+
+    @ViewBuilder
+    private var metadataContent: some View {
+        switch shell.photoViewerItem {
+        case let .catalog(assetID):
+            if let asset = catalog.asset(withID: assetID) {
+                PhotoViewerMetadataPanel(
+                    filename: asset.filename,
+                    path: catalog.fileURL(for: asset)?.path ?? "文件路径当前不可访问",
+                    camera: [asset.cameraMake, asset.cameraModel]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                        .nilIfEmpty ?? "—",
+                    lens: asset.lens ?? "—",
+                    date: asset.captureDate?.formatted(date: .abbreviated, time: .standard) ?? "—",
+                    dimensions: asset.displayDimensions,
+                    fileSize: ByteCountFormatter.string(fromByteCount: asset.fileSize, countStyle: .file)
+                )
+            }
+        case let .applePhotos(assetID):
+            if let asset = applePhotos.assets.first(where: { $0.id == assetID }) {
+                PhotoViewerMetadataPanel(
+                    filename: asset.filename,
+                    path: "Apple Photos 不提供公开的真实文件路径",
+                    camera: "—",
+                    lens: "—",
+                    date: asset.createdAt?.formatted(date: .abbreviated, time: .standard) ?? "—",
+                    dimensions: asset.displayDimensions,
+                    fileSize: "系统未公开"
+                )
+            }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private var missingItem: some View {
+        ContentUnavailableView(
+            "照片不可用",
+            systemImage: "photo.badge.exclamationmark",
+            description: Text("项目可能已从当前图库上下文移除。按 Esc 返回图库。")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func navigate(offset: Int) {
+        guard let item = shell.movePhotoViewer(offset: offset) else { return }
+        switch item {
+        case let .catalog(assetID):
+            catalog.selectSingle(assetID: assetID)
+        case let .applePhotos(assetID):
+            applePhotos.select(assetID: assetID, modifiers: [])
+        }
+    }
+}
+
+private struct PhotoViewerRatingControl: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    let asset: PhotoAsset
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(1...5, id: \.self) { rating in
+                Button {
+                    catalog.setRating(rating, for: [asset.id])
+                } label: {
+                    Image(systemName: rating <= asset.rating ? "star.fill" : "star")
+                        .foregroundStyle(rating <= asset.rating ? .yellow : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help("设为 \(rating) 星")
+                .accessibilityLabel("设为 \(rating) 星")
+            }
+            Button {
+                catalog.setRating(0, for: [asset.id])
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help("清除评分")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("星级评分")
+    }
+}
+
+private struct LocalPhotoViewerMedia: View {
+    @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var previews: PhotoPreviewStore
+    let asset: PhotoAsset
+    @State private var image: NSImage?
+    @State private var isLoading = false
+
+    var body: some View {
+        let request = catalog.previewRequest(for: asset)
+        ZStack {
+            Color.black.opacity(0.92)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(18)
+            } else if isLoading {
+                ProgressView(asset.isRAW ? "正在后台生成 RAW 预览…" : "正在加载离线预览…")
+                    .controlSize(.large)
+                    .tint(.white)
+                    .foregroundStyle(.white)
+            } else {
+                ContentUnavailableView(
+                    asset.mediaType == .video ? "视频缩略图不可用" : "大图预览不可用",
+                    systemImage: asset.systemImage,
+                    description: Text("原文件不会在主线程直接读取；可返回图库继续管理。")
+                )
+                .foregroundStyle(.white)
+            }
+
+            if asset.mediaType == .video {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 54))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .shadow(radius: 5)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: request?.cacheKey) {
+            image = nil
+            guard let request else {
+                isLoading = false
+                return
+            }
+            if let cached = previews.cachedImage(for: request) {
+                image = cached
+                isLoading = false
+                return
+            }
+            isLoading = true
+            let loadedImage = await previews.image(for: request)
+            guard !Task.isCancelled else { return }
+            image = loadedImage
+            isLoading = false
+        }
+    }
+}
+
+private struct ApplePhotosViewerMedia: View {
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+    let asset: ApplePhotosAsset
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.92)
+            if let image = applePhotos.previewImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(18)
+            } else if applePhotos.availability(for: asset) == .iCloudOnly {
+                ContentUnavailableView(
+                    "预览仅存在于 iCloud",
+                    systemImage: "icloud",
+                    description: Text("大图浏览不会自动下载 iCloud 原件。")
+                )
+                .foregroundStyle(.white)
+            } else {
+                ProgressView("正在请求屏幕预览…")
+                    .controlSize(.large)
+                    .tint(.white)
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: asset.id) {
+            await applePhotos.loadPreview(for: asset.id, targetSize: CGSize(width: 2_400, height: 1_800))
+        }
+    }
+}
+
+private struct PhotoViewerMetadataPanel: View {
+    let filename: String
+    let path: String
+    let camera: String
+    let lens: String
+    let date: String
+    let dimensions: String
+    let fileSize: String
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+            GridRow {
+                metadata("文件名", filename)
+                metadata("相机", camera)
+                metadata("时间", date)
+                metadata("文件大小", fileSize)
+            }
+            GridRow {
+                metadata("路径", path)
+                    .gridCellColumns(2)
+                metadata("镜头", lens)
+                metadata("尺寸", dimensions)
+            }
+        }
+        .font(.caption)
+        .frame(minHeight: 72)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .textSelection(.enabled)
+    }
+
+    private func metadata(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).foregroundStyle(.secondary)
+            Text(value).lineLimit(1).truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1359,6 +1830,7 @@ private struct CatalogAssetGrid: View {
 }
 
 private struct CatalogAssetCell: View {
+    @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
 
@@ -1378,7 +1850,14 @@ private struct CatalogAssetCell: View {
         let displayedThumbnail = thumbnailState.loadedImage ?? request.flatMap(thumbnails.image(for:))
 
         Button {
-            catalog.select(assetID: asset.id, in: orderedAssetIDs)
+            let modifiers = NSEvent.modifierFlags
+            catalog.select(assetID: asset.id, in: orderedAssetIDs, modifiers: modifiers)
+            if !modifiers.contains(.command), !modifiers.contains(.shift) {
+                shell.presentPhotoViewer(
+                    item: .catalog(asset.id),
+                    in: orderedAssetIDs.map { .catalog($0) }
+                )
+            }
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 ZStack {
@@ -1562,6 +2041,15 @@ private struct InspectorView: View {
                     }
                     LabeledContent("标记", value: asset.flag.title)
                     LabeledContent("收藏", value: asset.isFavorite ? "是" : "否")
+                    TextField("颜色标签", text: Binding(
+                        get: { asset.colorLabel },
+                        set: { catalog.setColorLabel($0, for: [asset.id]) }
+                    ))
+                    TextField("备注", text: Binding(
+                        get: { asset.comment },
+                        set: { catalog.setComment($0, for: [asset.id]) }
+                    ), axis: .vertical)
+                    .lineLimit(2...4)
                 }
             } else if !catalog.selectedAssetIDs.isEmpty {
                 Section("筛选") {
@@ -1697,6 +2185,10 @@ private extension PhotoFlag {
         case .reject: "Reject"
         }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 private extension PhotoSourceStatus {

@@ -51,6 +51,8 @@ struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
 
     var rating: Int
     var flag: PhotoFlag
+    var colorLabel: String = ""
+    var comment: String = ""
     var isFavorite: Bool
     var editRecipe: EditRecipe? = nil
     /// `nil` means the asset has not been indexed for OCR yet; an empty string is an indexed image with no recognized text.
@@ -156,44 +158,56 @@ enum PhotoMediaType: String, Codable, Hashable, Sendable {
     case video
 }
 
-enum PhotoFlag: String, Codable, Hashable, Sendable {
+enum PhotoFlag: String, Hashable, Sendable {
     case none
-    case pick
-    case reject
+    case pick = "picked"
+    case reject = "rejected"
 }
 
 enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     case all
+    case unrated
     case picks
     case rejected
     case fourStarsAndAbove
     case fiveStars
+    case raw
+    case videos
+    case duplicates
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .all: "全部"
+        case .unrated: "未评分"
         case .picks: "Pick"
         case .rejected: "Reject"
         case .fourStarsAndAbove: "4 星及以上"
         case .fiveStars: "5 星"
+        case .raw: "RAW"
+        case .videos: "视频"
+        case .duplicates: "重复照片"
         }
     }
 
-    func matches(_ asset: PhotoAsset) -> Bool {
+    func matches(_ asset: PhotoAsset, duplicateAssetIDs: Set<UUID> = []) -> Bool {
         switch self {
         case .all: true
+        case .unrated: asset.rating == 0
         case .picks: asset.flag == .pick
         case .rejected: asset.flag == .reject
         case .fourStarsAndAbove: asset.rating >= 4
         case .fiveStars: asset.rating == 5
+        case .raw: asset.isRAW
+        case .videos: asset.mediaType == .video
+        case .duplicates: duplicateAssetIDs.contains(asset.id)
         }
     }
 }
 
 struct CatalogSnapshot: Codable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     var sources: [PhotoSource]
@@ -234,9 +248,101 @@ struct CatalogSnapshot: Codable, Sendable {
             }
             schemaVersion = 2
         }
+        if schemaVersion < 3 {
+            for index in assets.indices {
+                assets[index].colorLabel = assets[index].colorLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                assets[index].comment = assets[index].comment.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            schemaVersion = 3
+        }
         if schemaVersion > CatalogSnapshot.currentSchemaVersion {
             // 前向版本保留字段能继续读取；当前 App 只维护自己已知的数据。
             schemaVersion = CatalogSnapshot.currentSchemaVersion
         }
+    }
+}
+
+extension PhotoAsset {
+    private enum CodingKeys: String, CodingKey {
+        case id, sourceID, relativePath, filename, fileExtension, fileSize, modifiedAt, captureDate
+        case width, height, cameraMake, cameraModel, lens, focalLength, aperture, shutterSpeed, iso
+        case mediaType, rawType, rating, flag, colorLabel, comment, isFavorite, editRecipe, ocrText
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        sourceID = try container.decode(UUID.self, forKey: .sourceID)
+        relativePath = try container.decode(String.self, forKey: .relativePath)
+        filename = try container.decode(String.self, forKey: .filename)
+        fileExtension = try container.decode(String.self, forKey: .fileExtension)
+        fileSize = try container.decode(Int64.self, forKey: .fileSize)
+        modifiedAt = try container.decodeIfPresent(Date.self, forKey: .modifiedAt)
+        captureDate = try container.decodeIfPresent(Date.self, forKey: .captureDate)
+        width = try container.decodeIfPresent(Int.self, forKey: .width)
+        height = try container.decodeIfPresent(Int.self, forKey: .height)
+        cameraMake = try container.decodeIfPresent(String.self, forKey: .cameraMake)
+        cameraModel = try container.decodeIfPresent(String.self, forKey: .cameraModel)
+        lens = try container.decodeIfPresent(String.self, forKey: .lens)
+        focalLength = try container.decodeIfPresent(String.self, forKey: .focalLength)
+        aperture = try container.decodeIfPresent(String.self, forKey: .aperture)
+        shutterSpeed = try container.decodeIfPresent(String.self, forKey: .shutterSpeed)
+        iso = try container.decodeIfPresent(Int.self, forKey: .iso)
+        mediaType = try container.decode(PhotoMediaType.self, forKey: .mediaType)
+        rawType = try container.decodeIfPresent(String.self, forKey: .rawType)
+        rating = try container.decodeIfPresent(Int.self, forKey: .rating) ?? 0
+        flag = try container.decodeIfPresent(PhotoFlag.self, forKey: .flag) ?? .none
+        colorLabel = try container.decodeIfPresent(String.self, forKey: .colorLabel) ?? ""
+        comment = try container.decodeIfPresent(String.self, forKey: .comment) ?? ""
+        isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        editRecipe = try container.decodeIfPresent(EditRecipe.self, forKey: .editRecipe)
+        ocrText = try container.decodeIfPresent(String.self, forKey: .ocrText)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(sourceID, forKey: .sourceID)
+        try container.encode(relativePath, forKey: .relativePath)
+        try container.encode(filename, forKey: .filename)
+        try container.encode(fileExtension, forKey: .fileExtension)
+        try container.encode(fileSize, forKey: .fileSize)
+        try container.encodeIfPresent(modifiedAt, forKey: .modifiedAt)
+        try container.encodeIfPresent(captureDate, forKey: .captureDate)
+        try container.encodeIfPresent(width, forKey: .width)
+        try container.encodeIfPresent(height, forKey: .height)
+        try container.encodeIfPresent(cameraMake, forKey: .cameraMake)
+        try container.encodeIfPresent(cameraModel, forKey: .cameraModel)
+        try container.encodeIfPresent(lens, forKey: .lens)
+        try container.encodeIfPresent(focalLength, forKey: .focalLength)
+        try container.encodeIfPresent(aperture, forKey: .aperture)
+        try container.encodeIfPresent(shutterSpeed, forKey: .shutterSpeed)
+        try container.encodeIfPresent(iso, forKey: .iso)
+        try container.encode(mediaType, forKey: .mediaType)
+        try container.encodeIfPresent(rawType, forKey: .rawType)
+        try container.encode(min(max(rating, 0), 5), forKey: .rating)
+        try container.encode(flag, forKey: .flag)
+        try container.encode(colorLabel, forKey: .colorLabel)
+        try container.encode(comment, forKey: .comment)
+        try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encodeIfPresent(editRecipe, forKey: .editRecipe)
+        try container.encodeIfPresent(ocrText, forKey: .ocrText)
+    }
+}
+
+extension PhotoFlag: Codable {
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "none", "": self = .none
+        case "pick", "picked": self = .pick
+        case "reject", "rejected": self = .reject
+        default: self = .none
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }

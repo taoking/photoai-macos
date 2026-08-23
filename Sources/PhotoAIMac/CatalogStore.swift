@@ -8,12 +8,17 @@ final class CatalogStore: ObservableObject {
     @Published private(set) var scanProgress: [UUID: Int] = [:]
     @Published private(set) var lastErrorMessage: String?
     @Published private(set) var selectedAssetIDs = Set<UUID>()
-    @Published var filter: LibraryFilter = .all
+    @Published var filter: LibraryFilter = .all {
+        didSet { invalidateQueryCache() }
+    }
     @Published private(set) var searchQuery = ""
     @Published private(set) var searchInterpretation = SearchInterpretation.empty
     @Published private(set) var isInterpretingSearch = false
 
     private var selectionAnchorID: UUID?
+    private var queryCache: [CatalogQueryKey: [PhotoAsset]] = [:]
+    private var duplicateAssetIDsCache: Set<UUID>?
+    private(set) var queryComputationCount = 0
 
     private let persistence: CatalogPersistence
     private var scanTasks: [UUID: Task<Void, Never>] = [:]
@@ -30,6 +35,12 @@ final class CatalogStore: ObservableObject {
             assets = []
             lastErrorMessage = "无法读取本地 Catalog：\(error.localizedDescription)"
         }
+    }
+
+    init(snapshot: CatalogSnapshot, storageURL: URL) {
+        persistence = CatalogPersistence(fileURL: storageURL)
+        sources = snapshot.sources
+        assets = snapshot.assets
     }
 
     deinit {
@@ -107,6 +118,11 @@ final class CatalogStore: ObservableObject {
     }
 
     func assets(for destination: SidebarDestination) -> [PhotoAsset] {
+        let cacheKey = CatalogQueryKey(destination: destination, filter: filter)
+        if let cachedAssets = queryCache[cacheKey] {
+            return cachedAssets
+        }
+
         let destinationAssets: [PhotoAsset]
         switch destination {
         case .allPhotos, .recentImports, .folders, .albums, .people, .cleanup:
@@ -126,11 +142,17 @@ final class CatalogStore: ObservableObject {
             destinationAssets = assets.filter { missingSourceIDs.contains($0.sourceID) }
         }
 
-        let filtered = destinationAssets.filter { filter.matches($0) }
+        let duplicateAssetIDs = filter == .duplicates ? duplicateAssetIDs() : []
+        let filtered = destinationAssets.filter { filter.matches($0, duplicateAssetIDs: duplicateAssetIDs) }
+        let result: [PhotoAsset]
         if destination == .recentImports {
-            return filtered.sorted { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
+            result = filtered.sorted { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
+        } else {
+            result = filtered
         }
-        return filtered
+        queryComputationCount += 1
+        queryCache[cacheKey] = result
+        return result
     }
 
     var selectedAsset: PhotoAsset? {
@@ -140,6 +162,18 @@ final class CatalogStore: ObservableObject {
 
     var selectedAssets: [PhotoAsset] {
         assets.filter { selectedAssetIDs.contains($0.id) }
+    }
+
+    func selectedAssets(orderedBy orderedAssetIDs: [UUID]) -> [PhotoAsset] {
+        let assetsByID = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
+        return orderedAssetIDs.compactMap { id in
+            guard selectedAssetIDs.contains(id) else { return nil }
+            return assetsByID[id]
+        }
+    }
+
+    func asset(withID assetID: UUID) -> PhotoAsset? {
+        assets.first(where: { $0.id == assetID })
     }
 
     var selectionAnchorAsset: PhotoAsset? {
@@ -169,6 +203,29 @@ final class CatalogStore: ObservableObject {
             isRAW: asset.isRAW,
             recipe: recipe(for: asset),
             lut: lut
+        )
+    }
+
+    func previewRequest(for asset: PhotoAsset) -> PhotoPreviewRequest? {
+        guard let source = sources.first(where: { $0.id == asset.sourceID }) else { return nil }
+        return PhotoPreviewRequest(
+            assetID: asset.id,
+            bookmarkData: source.bookmarkData,
+            lastKnownRootPath: source.lastKnownPath,
+            relativePath: asset.relativePath,
+            modificationDate: asset.modifiedAt,
+            mediaType: asset.mediaType
+        )
+    }
+
+    func originalExportRequest(for asset: PhotoAsset) -> OriginalPhotoExportRequest? {
+        guard let source = sources.first(where: { $0.id == asset.sourceID }) else { return nil }
+        return OriginalPhotoExportRequest(
+            assetID: asset.id,
+            bookmarkData: source.bookmarkData,
+            lastKnownRootPath: source.lastKnownPath,
+            relativePath: asset.relativePath,
+            filename: asset.filename
         )
     }
 
@@ -209,25 +266,56 @@ final class CatalogStore: ObservableObject {
         select(assetID: orderedAssetIDs[nextIndex], in: orderedAssetIDs, modifiers: [])
     }
 
+    func selectSingle(assetID: UUID) {
+        guard assets.contains(where: { $0.id == assetID }) else { return }
+        selectedAssetIDs = [assetID]
+        selectionAnchorID = assetID
+    }
+
     func clearSelection() {
         selectedAssetIDs = []
         selectionAnchorID = nil
     }
 
+    func selectAll(in orderedAssetIDs: [UUID]) {
+        selectedAssetIDs = Set(orderedAssetIDs)
+        selectionAnchorID = orderedAssetIDs.first
+    }
+
     func setRating(_ rating: Int) {
-        updateSelectedAssets { asset in
+        setRating(rating, for: selectedAssetIDs)
+    }
+
+    func setRating(_ rating: Int, for assetIDs: Set<UUID>) {
+        updateAssets(assetIDs) { asset in
             asset.rating = min(max(rating, 0), 5)
         }
     }
 
     func setFlag(_ flag: PhotoFlag) {
-        updateSelectedAssets { asset in
+        setFlag(flag, for: selectedAssetIDs)
+    }
+
+    func setFlag(_ flag: PhotoFlag, for assetIDs: Set<UUID>) {
+        updateAssets(assetIDs) { asset in
             asset.flag = flag
         }
     }
 
+    func setColorLabel(_ colorLabel: String, for assetIDs: Set<UUID>) {
+        updateAssets(assetIDs) { asset in
+            asset.colorLabel = colorLabel
+        }
+    }
+
+    func setComment(_ comment: String, for assetIDs: Set<UUID>) {
+        updateAssets(assetIDs) { asset in
+            asset.comment = comment
+        }
+    }
+
     func toggleFavorite() {
-        updateSelectedAssets { asset in
+        updateAssets(selectedAssetIDs) { asset in
             asset.isFavorite.toggle()
         }
     }
@@ -256,6 +344,7 @@ final class CatalogStore: ObservableObject {
     func setSearchQuery(_ query: String) {
         searchQuery = query
         searchInterpretation = SearchQueryInterpreter.fallbackInterpretation(for: query)
+        invalidateQueryCache()
     }
 
     func interpretSearchWithFoundationModel() async {
@@ -266,6 +355,7 @@ final class CatalogStore: ObservableObject {
         isInterpretingSearch = true
         searchInterpretation = await SearchQueryInterpreter.interpret(searchQuery)
         isInterpretingSearch = false
+        invalidateQueryCache()
     }
 
     func ocrRequestsForUnindexedAssets() -> [OCRIndexRequest] {
@@ -457,6 +547,8 @@ final class CatalogStore: ObservableObject {
             preserved.id = existing.id
             preserved.rating = existing.rating
             preserved.flag = existing.flag
+            preserved.colorLabel = existing.colorLabel
+            preserved.comment = existing.comment
             preserved.isFavorite = existing.isFavorite
             preserved.editRecipe = existing.editRecipe
             preserved.ocrText = existing.ocrText
@@ -477,6 +569,7 @@ final class CatalogStore: ObservableObject {
     }
 
     private func persist() {
+        invalidateQueryCache()
         do {
             try persistence.save(CatalogSnapshot(sources: sources, assets: assets))
         } catch {
@@ -484,13 +577,46 @@ final class CatalogStore: ObservableObject {
         }
     }
 
-    private func updateSelectedAssets(_ update: (inout PhotoAsset) -> Void) {
-        guard !selectedAssetIDs.isEmpty else { return }
-        for index in assets.indices where selectedAssetIDs.contains(assets[index].id) {
+    private func updateAssets(_ assetIDs: Set<UUID>, _ update: (inout PhotoAsset) -> Void) {
+        guard !assetIDs.isEmpty else { return }
+        for index in assets.indices where assetIDs.contains(assets[index].id) {
             update(&assets[index])
         }
         persist()
     }
+
+    private func invalidateQueryCache() {
+        queryCache.removeAll(keepingCapacity: true)
+        duplicateAssetIDsCache = nil
+    }
+
+    private func duplicateAssetIDs() -> Set<UUID> {
+        if let duplicateAssetIDsCache { return duplicateAssetIDsCache }
+        let candidates = assets.filter { $0.mediaType == .image && $0.fileSize > 0 }
+        let groups = Dictionary(grouping: candidates) { asset in
+            DuplicateIndexKey(
+                fileSize: asset.fileSize,
+                width: asset.width,
+                height: asset.height,
+                fileExtension: asset.fileExtension.lowercased()
+            )
+        }
+        let duplicateIDs = Set(groups.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
+        duplicateAssetIDsCache = duplicateIDs
+        return duplicateIDs
+    }
+}
+
+private struct CatalogQueryKey: Hashable {
+    let destination: SidebarDestination
+    let filter: LibraryFilter
+}
+
+private struct DuplicateIndexKey: Hashable {
+    let fileSize: Int64
+    let width: Int?
+    let height: Int?
+    let fileExtension: String
 }
 
 private enum CatalogStoreError: Error {

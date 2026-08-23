@@ -6,6 +6,7 @@ struct PhotoAIMacApp: App {
     @StateObject private var shell = AppShellModel()
     @StateObject private var catalog = CatalogStore()
     @StateObject private var thumbnails = ThumbnailStore()
+    @StateObject private var photoPreviews = PhotoPreviewStore()
     @StateObject private var editorPreview = EditorPreviewStore()
     @StateObject private var luts = LUTStore()
     @StateObject private var exporter = ExportCoordinator()
@@ -16,6 +17,7 @@ struct PhotoAIMacApp: App {
     @StateObject private var people = PeopleStore()
     @StateObject private var applePhotos = ApplePhotosStore()
     @StateObject private var applePhotosImporter = ApplePhotosImportCoordinator()
+    @StateObject private var originalPhotoExporter = OriginalPhotoExportStore()
 
     init() {
         if let icon = PhotoAIBrandAssets.logoImage {
@@ -29,6 +31,7 @@ struct PhotoAIMacApp: App {
                 .environmentObject(shell)
                 .environmentObject(catalog)
                 .environmentObject(thumbnails)
+                .environmentObject(photoPreviews)
                 .environmentObject(editorPreview)
                 .environmentObject(luts)
                 .environmentObject(exporter)
@@ -39,10 +42,18 @@ struct PhotoAIMacApp: App {
                 .environmentObject(people)
                 .environmentObject(applePhotos)
                 .environmentObject(applePhotosImporter)
+                .environmentObject(originalPhotoExporter)
         }
         .defaultSize(width: 1_360, height: 860)
         .commands {
-            AppCommands(shell: shell, catalog: catalog, luts: luts, batch: batch)
+            AppCommands(
+                shell: shell,
+                catalog: catalog,
+                luts: luts,
+                batch: batch,
+                originalExporter: originalPhotoExporter,
+                applePhotos: applePhotos
+            )
         }
 
         Settings {
