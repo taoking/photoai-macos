@@ -40,4 +40,4 @@ Phase 17 只扩展照片快速筛选、A/B 比较、基础分组、统计、原�
 
 ## Phase 17 Code Gate
 
-当前状态：`NOT READY`。功能、自动化、100,000 项性能门禁和真实 922 项 UI 验证已完成；提交、推送和堆叠 Draft PR 完成后更新为 `PASS`。
+当前状态：`PASS`。功能、自动化、100,000 项性能门禁、真实 922 项 UI 验证、提交与推送均已完成；交付位于堆叠 Draft [PR #5](https://github.com/taoking/photoai-macos/pull/5)，基线为 Phase 16 Draft PR #4。表中明确标注的 3,000 张真实样本和真实 UI 导出选择项仍保持 `NOT RUN`，未虚报为通过。

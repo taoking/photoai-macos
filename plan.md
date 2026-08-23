@@ -4,7 +4,7 @@
 
 ## 当前阶段：Phase 17 — 摄影照片筛选工作流
 
-### Phase 17 — 摄影照片筛选工作流（进行中）
+### Phase 17 — 摄影照片筛选工作流（已完成）
 
 - [x] 梳理 Phase 16 Viewer、Catalog Index、选择模型和原文件导出能力，确认 Phase 17 不进入照片编辑范围。
 - [x] 实现保持图库上下文的 Culling Mode、缓存预览、快捷键导航与单张评分/标记。
@@ -13,7 +13,7 @@
 - [x] 扩展原文件导出：Pick、五星、当前筛选结果，并可选保持来源目录结构且绝不覆盖目标。
 - [x] 为评分、Pick/Reject 和批量操作增加 Command+Z 撤销，并避免触发磁盘重扫或 UI 线程 RAW 读取。
 - [x] 补齐提示词指定测试与 100,000 项 Catalog 性能门禁，完成真实 UI 验证并记录 PASS / NOT RUN / BLOCKED。
-- [ ] 更新 README 和 `docs/phase-17-culling-validation.md`，完成提交、推送和堆叠 Draft PR 后停止。
+- [x] 更新 README 和 `docs/phase-17-culling-validation.md`，完成提交、推送和堆叠 Draft PR 后停止。
 
 ### Phase 16 — 照片管理与导出工作流（已完成）
 
