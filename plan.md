@@ -42,6 +42,13 @@
 - [x] 通过显式 `Bundle.module` / `NSImage` 加载统一设置运行时图标与侧边栏 Logo；真实应用中品牌图标和文字均正常显示。
 - [x] 完成 71 项 Swift/Xcode 自动测试、资源可用性回归、应用包 `Info.plist`/资源清单、ad-hoc 签名和真实 UI 验证。
 
+### Phase 15 合并与 Release 打包（进行中）
+
+- [x] 确认版本沿用 `0.1.0 (1)`，不擅自创建 Git tag 或 GitHub Release。
+- [x] 补充可重复的 Release 打包脚本，确保 `.icns` 与 SwiftPM 品牌资源进入应用包，并拒绝覆盖既有产物。
+- [ ] 在合并后的 `main` 上完成 Swift/Xcode 测试、Release 构建、签名、压缩包与 SHA-256 验证。
+- [ ] 将 PR #3 从 Draft 转为可审查并合并、推送 `main`，记录最终提交和产物路径。
+
 ### Phase 15 — Apple Photos 系统相册接入（已实现；真实全库读取与渐进网格已验，剩余受控运行时复测待审）
 
 - [x] 从 `main` 建立独立 `agent/phase-15-apple-photos` 分支；不混入尚未合并的 Phase 14 PR #2。

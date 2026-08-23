@@ -21,6 +21,17 @@ open .build/PhotoAI-Mac.app
 
 该调试 bundle 不会写入仓库。
 
+## Release 打包
+
+当前版本为 `0.1.0 (1)`。以下命令会执行 Release 配置构建，组装包含应用图标与 SwiftPM 品牌资源的 `.app`，进行 ad-hoc 签名，并在 `dist/` 生成未公证压缩包、SHA-256 和构建信息：
+
+```sh
+DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer \
+  ./Scripts/create-release-artifacts.sh
+```
+
+产物不含 Developer ID 签名或 Apple 公证，适合作为本地 Release 候选；通过公网分发前仍需正式签名与公证。脚本不会覆盖已有同名产物，可通过 `PHOTOAI_RELEASE_OUTPUT_DIR` 指定新的输出目录。
+
 ## 品牌资源
 
 PhotoAI Mac 使用深靛蓝底色上的“镜头光圈 × AI 星芒”标志。PNG 母版位于 `Resources/Brand/PhotoAI-Logo.png`，macOS bundle 图标位于 `Resources/PhotoAI-Mac.icns`；SwiftPM 运行时资源位于 `Sources/PhotoAIMac/Resources/PhotoAI-Logo.png`，用于 Dock/应用切换器及侧边栏品牌区。
