@@ -42,4 +42,4 @@ Phase 16 只扩展照片管理与原文件复制导出，不新增 RAW 调色、
 
 ## Phase 16 Code Gate
 
-当前状态：`NOT READY`。自动化、50,000 项索引路径和本机 UI 验证已完成；提交、推送和 Draft PR 完成后更新为 `PASS`。
+当前状态：`PASS`。功能、自动化、50,000 项索引路径、本机 UI 验证、提交与推送均已完成；交付位于 Draft [PR #4](https://github.com/taoking/photoai-macos/pull/4)。表中明确标注的真实样本/权限项仍保持 `NOT RUN`，未虚报为通过。
