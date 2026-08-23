@@ -8,15 +8,16 @@
 
 ## 验证命令
 
-合并后记录以下命令的实际结果：
+以下命令已在合并后的 `main` 上执行：
 
-- `swift test`
-- `xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' -quiet test`
-- `zsh -n Scripts/create-release-artifacts.sh`
-- `Scripts/create-release-artifacts.sh`
-- `unzip -t PhotoAI-Mac-0.1.0-unsigned.app.zip`
-- `shasum -a 256 -c PhotoAI-Mac-0.1.0-SHA256.txt`
-- `codesign --verify --deep --strict --verbose=2 PhotoAI-Mac.app`
+- `swift test`：通过，71 项测试 / 15 个套件；真实 Sony RAW 集成项因未设置显式环境变量而按设计跳过。
+- `xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' -quiet test`：通过；仅有 Xcode 27 beta 已知诊断警告。
+- `zsh -n Scripts/create-release-artifacts.sh`：通过。
+- `Scripts/create-release-artifacts.sh`：Release 构建、应用组装及 ad-hoc 签名通过。
+- `unzip -t PhotoAI-Mac-0.1.0-unsigned.app.zip`：通过，压缩数据无错误且不含 AppleDouble / `__MACOSX` 元数据。
+- `shasum -a 256 -c PhotoAI-Mac-0.1.0-SHA256.txt`：通过。
+- `codesign --verify --deep --strict --verbose=2 PhotoAI-Mac.app`：通过。
+- 应用包内 `PhotoAI-Mac.icns`、SwiftPM 资源 bundle 和 `PhotoAI-Logo.png` 均存在，版本为 `0.1.0 (1)`，最低系统为 macOS 27.0。
 
 ## 分发限制
 
