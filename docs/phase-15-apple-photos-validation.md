@@ -19,8 +19,8 @@
 | 命令 | 结果 |
 | --- | --- |
 | `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift build` | 通过。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，70 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
-| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，70 tests / 15 suites；测试日志含既有 Xcode beta E5/运行时警告，但没有失败。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer swift test` | 通过，71 tests / 15 suites；真实 Sony RAW 集成测试按既有条件显式 `SKIPPED`。 |
+| `DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer xcodebuild -scheme PhotoAIMac -destination 'platform=macOS,arch=arm64' test` | `TEST SUCCEEDED`，71 tests / 15 suites；测试日志含既有 Xcode beta E5/运行时警告，但没有失败。 |
 | `rg -n "availability\\(for: asset\\)|isSynchronous|requestImage\\(|isNetworkAccessAllowed|requestData\\(|writeData\\(" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：没有初始全图库同步 iCloud 探测；浏览查询均禁止网络，只有显式导入资源的路径允许网络。 |
 | `rg -n "PHPhotoLibrary|PHAssetChangeRequest|PHAssetCollectionChangeRequest|performChanges" Sources/PhotoAIMac/ApplePhotos*.swift` | 代码审查通过：仅有授权状态/授权请求；无 PhotoKit 写入或修改 API。 |
 | `git diff --check` | 通过。 |
@@ -60,7 +60,14 @@
 - 新增 `Scripts/build-debug-app.sh`，每次都先编译当前源码，再将同一次构建产生的 `PhotoAIMac`、`Info.plist` 和图标组装到 `.build/PhotoAI-Mac.app`，最后进行 ad-hoc 签名。README 已改为使用该脚本，避免手工复制漏掉新二进制。
 - 侧边栏由显式按钮驱动并统一调用 `AppShellModel.select(_:)`。这覆盖 SwiftUI `List(selection:)` 不会在再次点击已选中行时写 Binding 的行为；编辑器中点击已选中的“所有照片”现在也会明确退出编辑器。
 - 真实回归路径：选择 `DSC01872.JPG` → 打开编辑器 → 调整曝光 → 再次点击已选中的“所有照片”。结果返回 922 项主网格，可见 RAW/JPEG 缩略图、文件名、元数据与选中状态均正常；验收后已还原测试照片的临时调整。
-- `zsh -n Scripts/build-debug-app.sh`、70 项 `swift test`、70 项 `xcodebuild test`、`codesign --verify --deep --strict` 与 `git diff --check` 均通过；最终调试包已经重新启动。
+- `zsh -n Scripts/build-debug-app.sh`、71 项 `swift test`、71 项 `xcodebuild test`、`codesign --verify --deep --strict` 与 `git diff --check` 均通过；最终调试包已经重新启动。
+
+## 历史品牌 Logo 恢复
+
+- 从历史提交 `bd7e6a1` 恢复 `Resources/Brand/PhotoAI-Logo.png`、`Resources/PhotoAI-Mac.icns` 与 `Sources/PhotoAIMac/Resources/PhotoAI-Logo.png`；PNG 母版和运行时副本 SHA-256 一致。
+- `Package.swift` 恢复 SwiftPM 资源处理，`Info.plist` 恢复 `CFBundleIconFile = PhotoAI-Mac`。调试包脚本会同时复制 `.icns` 与 `PhotoAIMac_PhotoAIMac.bundle` 后再完成深度临时签名。
+- 运行时改为从 `Bundle.module` 显式创建 `NSImage`，同一图像用于 Dock/应用切换器和侧边栏品牌区；若资源异常，侧边栏仍有光圈符号回退。新增测试确认资源存在且尺寸有效。
+- 真实调试包已重新启动。侧边栏显示蓝紫色“镜头光圈 × AI 星芒”图标、“PhotoAI Mac”和“本地照片工作台”；922 项图库保持正常。
 
 ## 人工 UI 验证
 

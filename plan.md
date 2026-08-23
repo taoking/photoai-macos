@@ -35,6 +35,13 @@
 - [x] 新增统一调试包构建脚本并更新 README，确保 `.build/PhotoAI-Mac.app` 始终装入刚编译的可执行文件并完成临时签名。
 - [x] 完成 70 项 Swift/Xcode 自动测试、脚本语法与签名验证；最终调试包已启动，真实 JPEG 调整后通过同一“所有照片”侧栏入口返回，922 项网格与可见缩略图保持正常。
 
+### 历史 Logo 恢复（已完成）
+
+- [x] 定位历史提交 `bd7e6a1`，确认原始 PNG、macOS `.icns`、SwiftPM 资源声明、侧边栏品牌区和运行时图标配置完整。
+- [x] 恢复 PNG 母版、SwiftPM 运行时 PNG 与 macOS `.icns`；适配当前侧边栏，并让调试包脚本同时复制 `.icns` 和 SwiftPM 资源 bundle。
+- [x] 通过显式 `Bundle.module` / `NSImage` 加载统一设置运行时图标与侧边栏 Logo；真实应用中品牌图标和文字均正常显示。
+- [x] 完成 71 项 Swift/Xcode 自动测试、资源可用性回归、应用包 `Info.plist`/资源清单、ad-hoc 签名和真实 UI 验证。
+
 ### Phase 15 — Apple Photos 系统相册接入（已实现；真实全库读取与渐进网格已验，剩余受控运行时复测待审）
 
 - [x] 从 `main` 建立独立 `agent/phase-15-apple-photos` 分支；不混入尚未合并的 Phase 14 PR #2。

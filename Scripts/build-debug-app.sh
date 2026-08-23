@@ -28,6 +28,13 @@ if [[ -f "$project_directory/Resources/PhotoAI-Mac.icns" ]]; then
         "$app_directory/Contents/Resources/PhotoAI-Mac.icns"
 fi
 
+resource_bundle="$binary_directory/PhotoAIMac_PhotoAIMac.bundle"
+if [[ -d "$resource_bundle" ]]; then
+    ditto \
+        "$resource_bundle" \
+        "$app_directory/Contents/Resources/PhotoAIMac_PhotoAIMac.bundle"
+fi
+
 codesign --force --deep --sign - "$app_directory"
 
 echo "Built current debug app: $app_directory"

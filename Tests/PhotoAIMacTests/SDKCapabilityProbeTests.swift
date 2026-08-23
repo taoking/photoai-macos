@@ -3,6 +3,15 @@ import Testing
 
 struct SDKCapabilityProbeTests {
     @Test
+    @MainActor
+    func loadsBundledPhotoAILogo() throws {
+        let logo = try #require(PhotoAIBrandAssets.logoImage)
+
+        #expect(logo.size.width > 0)
+        #expect(logo.size.height > 0)
+    }
+
+    @Test
     func compilesDeclaredFrameworkSymbols() {
         SDKCapabilityProbe.compileTimeSmokeTest()
     }
