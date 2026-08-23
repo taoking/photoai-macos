@@ -23,12 +23,12 @@ checksum_name="PhotoAI-Mac-$version-SHA256.txt"
 build_info_name="BUILD-INFO.txt"
 
 mkdir -p "$output_directory"
-for path in \
+for artifact_path in \
     "$output_directory/$artifact_name" \
     "$output_directory/$checksum_name" \
     "$output_directory/$build_info_name"; do
-    if [[ -e "$path" ]]; then
-        print -u2 "Refusing to overwrite existing artifact: $path"
+    if [[ -e "$artifact_path" ]]; then
+        print -u2 "Refusing to overwrite existing artifact: $artifact_path"
         exit 1
     fi
 done
