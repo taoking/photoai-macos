@@ -5,6 +5,8 @@ struct AppCommands: Commands {
     @ObservedObject var catalog: CatalogStore
     @ObservedObject var luts: LUTStore
     @ObservedObject var batch: BatchWorkflowStore
+    @ObservedObject var originalExporter: OriginalPhotoExportStore
+    @ObservedObject var applePhotos: ApplePhotosStore
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
@@ -32,6 +34,19 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("显示") {
+            Button(shell.isPhotoViewerPresented ? "返回图库" : "大图预览") {
+                togglePhotoViewer()
+            }
+            .keyboardShortcut(.space, modifiers: [])
+
+            Button("关闭大图预览") {
+                shell.dismissPhotoViewer()
+            }
+            .keyboardShortcut(.escape, modifiers: [])
+            .disabled(!shell.isPhotoViewerPresented)
+
+            Divider()
+
             Button(shell.isInspectorVisible ? "隐藏检查器" : "显示检查器") {
                 shell.toggleInspector()
             }
@@ -48,6 +63,31 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("照片") {
+            Button("全选当前结果") {
+                catalog.selectAll(in: visibleAssetIDs)
+                shell.announce("已选择当前筛选的 \(visibleAssetIDs.count) 个项目。")
+            }
+            .keyboardShortcut("a", modifiers: .command)
+            .disabled(shell.selection == .applePhotos || visibleAssetIDs.isEmpty)
+
+            Menu("导出原始照片") {
+                Button("导出所选原文件…") {
+                    exportSelectedOriginals()
+                }
+                .disabled(catalog.selectedAssetIDs.isEmpty)
+
+                Button("导出当前筛选结果…") {
+                    originalExporter.chooseDestinationAndStart(
+                        assets: catalog.assets(for: shell.selection),
+                        catalog: catalog
+                    )
+                }
+                .disabled(visibleAssetIDs.isEmpty)
+            }
+            .disabled(originalExporter.state.isActive || shell.selection == .applePhotos)
+
+            Divider()
+
             Button("在编辑器中打开") {
                 shell.presentEditor()
             }
@@ -105,12 +145,12 @@ struct AppCommands: Commands {
             Divider()
 
             Button("上一张") {
-                catalog.selectAdjacent(offset: -1, in: visibleAssetIDs)
+                navigate(offset: -1)
             }
             .keyboardShortcut(.leftArrow, modifiers: [])
 
             Button("下一张") {
-                catalog.selectAdjacent(offset: 1, in: visibleAssetIDs)
+                navigate(offset: 1)
             }
             .keyboardShortcut(.rightArrow, modifiers: [])
 
@@ -161,5 +201,46 @@ struct AppCommands: Commands {
         batch.chooseDestinationAndStart(assets: assets, preset: preset) { asset in
             catalog.renderRequest(for: asset, lut: luts.renderRecipe(for: catalog.recipe(for: asset)))
         }
+    }
+
+    private func togglePhotoViewer() {
+        if shell.isPhotoViewerPresented {
+            shell.dismissPhotoViewer()
+            return
+        }
+        if shell.selection == .applePhotos,
+           let asset = applePhotos.selectedAsset {
+            shell.presentPhotoViewer(
+                item: .applePhotos(asset.id),
+                in: applePhotos.displayedAssets.map { .applePhotos($0.id) }
+            )
+        } else if let asset = catalog.selectionAnchorAsset ?? catalog.selectedAsset {
+            shell.presentPhotoViewer(
+                item: .catalog(asset.id),
+                in: visibleAssetIDs.map { .catalog($0) }
+            )
+        }
+    }
+
+    private func navigate(offset: Int) {
+        if shell.isPhotoViewerPresented, let item = shell.movePhotoViewer(offset: offset) {
+            synchronizeSelection(with: item)
+            return
+        }
+        catalog.selectAdjacent(offset: offset, in: visibleAssetIDs)
+    }
+
+    private func synchronizeSelection(with item: PhotoViewerItem) {
+        switch item {
+        case let .catalog(assetID):
+            catalog.select(assetID: assetID, in: visibleAssetIDs, modifiers: [])
+        case let .applePhotos(assetID):
+            applePhotos.select(assetID: assetID, modifiers: [])
+        }
+    }
+
+    private func exportSelectedOriginals() {
+        let assets = catalog.selectedAssets(orderedBy: visibleAssetIDs)
+        originalExporter.chooseDestinationAndStart(assets: assets, catalog: catalog)
     }
 }

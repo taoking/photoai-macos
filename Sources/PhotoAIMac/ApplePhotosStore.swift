@@ -183,6 +183,7 @@ final class ApplePhotosStore: ObservableObject {
     }
 
     func select(assetID: String, modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        let previousSelection = selectedAssetIDs
         selection.select(
             assetID: assetID,
             in: displayedAssetIDs,
@@ -190,7 +191,7 @@ final class ApplePhotosStore: ObservableObject {
             shift: modifiers.contains(.shift)
         )
         selectedAssetIDs = selection.selectedAssetIDs
-        if selectedAssetIDs.count != 1 { previewImage = nil }
+        if selectedAssetIDs != previousSelection { previewImage = nil }
     }
 
     func clearSelection() {
