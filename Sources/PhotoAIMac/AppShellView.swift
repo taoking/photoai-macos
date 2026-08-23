@@ -12,7 +12,15 @@ struct AppShellView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(selection: $shell.selection)
+            // 侧边栏的 Binding 必须经过 AppShellModel.select(_:)。SidebarView 还会
+            // 显式处理已选中行的再次点击，因为 SwiftUI List 此时不会调用 Binding
+            // setter；编辑器必须把这次点击理解为明确的“返回该页面”。
+            SidebarView(
+                selection: Binding(
+                    get: { shell.selection },
+                    set: { shell.select($0) }
+                )
+            )
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } detail: {
             ZStack {
@@ -170,8 +178,17 @@ private struct SidebarView: View {
             ForEach(SidebarGroup.allCases) { group in
                 Section(group.title) {
                     ForEach(SidebarDestination.allCases.filter { $0.group == group }) { destination in
-                        Label(destination.title, systemImage: destination.systemImage)
-                            .tag(destination)
+                        Button {
+                            selection = destination
+                        } label: {
+                            Label(destination.title, systemImage: destination.systemImage)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .tag(destination)
+                        .accessibilityAddTraits(selection == destination ? .isSelected : [])
                     }
                 }
             }

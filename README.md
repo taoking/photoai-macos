@@ -12,7 +12,14 @@ swift test
 swift run PhotoAIMac
 ```
 
-若需以本地 `.app` bundle 形式进行 UI 验收，可将 `Resources/Info.plist` 与 `.build/debug/PhotoAIMac` 分别放入 `PhotoAI-Mac.app/Contents/` 和 `PhotoAI-Mac.app/Contents/MacOS/` 后用 Finder 打开。该调试 bundle 不会写入仓库。
+若需以本地 `.app` bundle 形式进行 UI 验收，请用脚本重新编译、组装并临时签名当前源码，避免误开旧二进制：
+
+```sh
+DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer ./Scripts/build-debug-app.sh
+open .build/PhotoAI-Mac.app
+```
+
+该调试 bundle 不会写入仓库。
 
 本机验证结果与未验证项见 [docs/sdk-spike.md](docs/sdk-spike.md)，阶段验收见 [Phase 1](docs/phase-1-validation.md)、[Phase 2](docs/phase-2-validation.md)、[Phase 3](docs/phase-3-validation.md)、[Phase 4](docs/phase-4-validation.md)、[Phase 5](docs/phase-5-validation.md)、[Phase 6](docs/phase-6-validation.md)、[Phase 7](docs/phase-7-validation.md)、[Phase 8](docs/phase-8-validation.md)、[Phase 9](docs/phase-9-validation.md)、[Phase 10](docs/phase-10-validation.md)、[Phase 11](docs/phase-11-validation.md)、[Phase 12](docs/stability-validation.md)、[Phase 12.5](docs/phase-12.5-validation.md) 与 [Phase 15](docs/phase-15-apple-photos-validation.md)。
 
