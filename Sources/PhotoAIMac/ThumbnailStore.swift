@@ -49,6 +49,9 @@ final class ThumbnailStore: ObservableObject {
     private var inFlightKeys = Set<String>()
     private var callbacksByKey: [String: [UUID: (NSImage?) -> Void]] = [:]
     private(set) var completedKeys = Set<String>()
+    /// 只在界面从编辑器等覆盖层返回时递增。可见 Cell 监听此值并从缓存重新取得
+    /// 自己的缩略图，或重新订阅仍在进行的加载；它不是每张缩略图完成时的全局广播。
+    @Published private(set) var visibleSubscriberGeneration = 0
 
     init() {
         memoryCache.countLimit = 600
@@ -57,6 +60,16 @@ final class ThumbnailStore: ObservableObject {
 
     func image(for request: ThumbnailRequest) -> NSImage? {
         memoryCache.object(forKey: request.cacheKey as NSString)
+    }
+
+    /// 编辑器覆盖层退出后，显式让仍在屏幕上的缩略图订阅方重新连接到缓存/加载队列。
+    ///
+    /// SwiftUI 在 macOS beta 上可能保留 LazyVGrid Cell 的实例，却跳过其一次
+    /// `onAppear`。若该 Cell 恰好在编辑期间错过回调，就会一直保留旧的 loading /
+    /// failed 状态。这里一次性的 generation 变更只影响当前可见 Cell，不会恢复过去
+    /// "每解码一张图就刷新整个网格" 的性能问题。
+    func refreshVisibleSubscribers() {
+        visibleSubscriberGeneration &+= 1
     }
 
     /// 仅让仍可见的请求方在完成时更新自己的 `@State`。缓存本身不发布全局变更，

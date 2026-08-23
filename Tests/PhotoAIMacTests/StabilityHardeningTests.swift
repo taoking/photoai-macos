@@ -82,6 +82,16 @@ struct StabilityHardeningTests {
     }
 
     @Test
+    @MainActor
+    func editorReturnRequestsOneVisibleThumbnailRefresh() {
+        let store = ThumbnailStore()
+
+        #expect(store.visibleSubscriberGeneration == 0)
+        store.refreshVisibleSubscribers()
+        #expect(store.visibleSubscriberGeneration == 1)
+    }
+
+    @Test
     func personPreviewThumbnailFailureDoesNotStayLoading() {
         let state = ThumbnailViewState.completed(with: nil)
 

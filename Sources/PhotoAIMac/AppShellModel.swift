@@ -9,6 +9,9 @@ final class AppShellModel: ObservableObject {
     @Published private(set) var statusMessage = "准备就绪 — 原始照片始终保持不变。"
 
     func select(_ destination: SidebarDestination) {
+        if isEditorPresented {
+            isEditorPresented = false
+        }
         selection = destination
         statusMessage = "正在显示\(destination.title)。"
     }

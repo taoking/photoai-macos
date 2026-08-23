@@ -40,6 +40,18 @@ struct AppShellModelTests {
     }
 
     @Test
+    @MainActor
+    func selectingDestinationExitsTheEditor() {
+        let shell = AppShellModel()
+        shell.presentEditor()
+
+        shell.select(.allPhotos)
+
+        #expect(!shell.isEditorPresented)
+        #expect(shell.selection == .allPhotos)
+    }
+
+    @Test
     func coversAllPlannedSidebarDestinations() {
         let titles = Set(SidebarDestination.allCases.map(\.title))
 

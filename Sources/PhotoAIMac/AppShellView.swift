@@ -8,6 +8,7 @@ struct AppShellView: View {
     @EnvironmentObject private var batch: BatchWorkflowStore
     @EnvironmentObject private var cleanup: CleanupWorkflowStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
 
     var body: some View {
         NavigationSplitView {
@@ -45,8 +46,21 @@ struct AppShellView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: shell.selection) { _, _ in
+            // 侧边栏在编辑时仍然可见；把它当成返回图库的明确导航操作，不能留下
+            // 一个盖住新目标页的编辑器。工具栏/快捷键通过 AppShellModel.select(_:) 时
+            // 也保持相同语义。
+            if shell.isEditorPresented {
+                shell.dismissEditor()
+            }
             catalog.clearSelection()
             if shell.selection != .applePhotos { applePhotos.clearSelection() }
+        }
+        .onChange(of: shell.isEditorPresented) { wasPresented, isPresented in
+            guard wasPresented, !isPresented else { return }
+            // 不依赖 onAppear：在 macOS beta 上，覆盖层退出时 LazyVGrid 的既有 Cell
+            // 有时不会再收到生命周期事件。一次性唤醒可见订阅方即可从内存缓存或
+            // 正在进行的请求恢复缩略图，不会为每张完成的缩略图重算整张网格。
+            thumbnails.refreshVisibleSubscribers()
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -1261,19 +1275,26 @@ private struct EmptyLibraryView: View {
 private struct CatalogAssetGrid: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
 
     let assets: [PhotoAsset]
 
     var body: some View {
         // 范围选择只需一份稳定顺序，不能为每个 Cell 重复建立 N 元素数组。
         let orderedAssetIDs = assets.map(\.id)
+        // 仅编辑器返回时递增；读取它会把这次受控刷新传给已实例化的 Cell。
+        let thumbnailRefreshGeneration = thumbnails.visibleSubscriberGeneration
         ScrollView {
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: shell.gridDensity.minimumThumbnailWidth), spacing: 14)],
                 spacing: 14
             ) {
                 ForEach(assets) { asset in
-                    CatalogAssetCell(asset: asset, orderedAssetIDs: orderedAssetIDs)
+                    CatalogAssetCell(
+                        asset: asset,
+                        orderedAssetIDs: orderedAssetIDs,
+                        thumbnailRefreshGeneration: thumbnailRefreshGeneration
+                    )
                 }
             }
             .padding(24)
@@ -1287,6 +1308,7 @@ private struct CatalogAssetCell: View {
 
     let asset: PhotoAsset
     let orderedAssetIDs: [UUID]
+    let thumbnailRefreshGeneration: Int
     @State private var thumbnailState: ThumbnailViewState = .idle
     @State private var thumbnailToken: ThumbnailLoadToken?
 
@@ -1360,6 +1382,9 @@ private struct CatalogAssetCell: View {
             loadThumbnail(request)
         }
         .onChange(of: request?.cacheKey) { _, _ in
+            loadThumbnail(request)
+        }
+        .onChange(of: thumbnailRefreshGeneration) { _, _ in
             loadThumbnail(request)
         }
         .onDisappear {
