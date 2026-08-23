@@ -7,28 +7,68 @@ struct AppShellView: View {
     @EnvironmentObject private var luts: LUTStore
     @EnvironmentObject private var batch: BatchWorkflowStore
     @EnvironmentObject private var cleanup: CleanupWorkflowStore
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(selection: $shell.selection)
+            // 侧边栏的 Binding 必须经过 AppShellModel.select(_:)。SidebarView 还会
+            // 显式处理已选中行的再次点击，因为 SwiftUI List 此时不会调用 Binding
+            // setter；编辑器必须把这次点击理解为明确的“返回该页面”。
+            SidebarView(
+                selection: Binding(
+                    get: { shell.selection },
+                    set: { shell.select($0) }
+                )
+            )
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } detail: {
-            if shell.isEditorPresented {
-                EditorView()
-            } else {
+            ZStack {
                 HSplitView {
                     LibraryPlaceholderView()
 
                     if shell.isInspectorVisible {
-                        InspectorView()
+                        Group {
+                            if shell.selection == .applePhotos {
+                                ApplePhotosInspectorView()
+                            } else {
+                                InspectorView()
+                            }
+                        }
                             .frame(minWidth: 250, idealWidth: 300, maxWidth: 380)
                     }
+                }
+                .allowsHitTesting(!shell.isEditorPresented)
+                .accessibilityHidden(shell.isEditorPresented)
+
+                // 让图库在编辑期间留在同一视图树中。此前用条件分支替换整个 detail，
+                // 返回时会一次性销毁并重建所有可见 LazyVGrid Cell；在快速切换或调色
+                // 后这会让缩略图订阅错过更新，看起来像“所有照片空白”。编辑器覆盖在
+                // 保留的图库之上，完成后可立即显示已有缩略图状态与内存缓存。
+                if shell.isEditorPresented {
+                    EditorView()
+                        .background(.background)
+                        .accessibilityAddTraits(.isModal)
                 }
             }
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: shell.selection) { _, _ in
+            // 侧边栏在编辑时仍然可见；把它当成返回图库的明确导航操作，不能留下
+            // 一个盖住新目标页的编辑器。工具栏/快捷键通过 AppShellModel.select(_:) 时
+            // 也保持相同语义。
+            if shell.isEditorPresented {
+                shell.dismissEditor()
+            }
             catalog.clearSelection()
+            if shell.selection != .applePhotos { applePhotos.clearSelection() }
+        }
+        .onChange(of: shell.isEditorPresented) { wasPresented, isPresented in
+            guard wasPresented, !isPresented else { return }
+            // 不依赖 onAppear：在 macOS beta 上，覆盖层退出时 LazyVGrid 的既有 Cell
+            // 有时不会再收到生命周期事件。一次性唤醒可见订阅方即可从内存缓存或
+            // 正在进行的请求恢复缩略图，不会为每张完成的缩略图重算整张网格。
+            thumbnails.refreshVisibleSubscribers()
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -135,17 +175,65 @@ private struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("PhotoAI Mac")
+                            .font(.headline)
+                        Text("本地照片工作台")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    PhotoAIBrandMark()
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("PhotoAI Mac，本地照片工作台")
+                .listRowSeparator(.hidden)
+                .allowsHitTesting(false)
+            }
+
             ForEach(SidebarGroup.allCases) { group in
                 Section(group.title) {
                     ForEach(SidebarDestination.allCases.filter { $0.group == group }) { destination in
-                        Label(destination.title, systemImage: destination.systemImage)
-                            .tag(destination)
+                        Button {
+                            selection = destination
+                        } label: {
+                            Label(destination.title, systemImage: destination.systemImage)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .tag(destination)
+                        .accessibilityAddTraits(selection == destination ? .isSelected : [])
                     }
                 }
             }
         }
         .navigationTitle("PhotoAI Mac")
         .listStyle(.sidebar)
+    }
+}
+
+private struct PhotoAIBrandMark: View {
+    var body: some View {
+        Group {
+            if let logoImage = PhotoAIBrandAssets.logoImage {
+                Image(nsImage: logoImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            } else {
+                Image(systemName: "camera.aperture")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(5)
+            }
+        }
+        .frame(width: 30, height: 30)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .accessibilityHidden(true)
     }
 }
 
@@ -156,6 +244,9 @@ private struct LibraryPlaceholderView: View {
     @EnvironmentObject private var applePhotos: ApplePhotosStore
 
     var body: some View {
+        // 保持同一次 render 中的本地 Catalog 结果一致，避免标题、空态判断和网格各自
+        // 重新筛选/排序整套资产。
+        let catalogAssets = catalog.assets(for: shell.selection)
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -167,7 +258,7 @@ private struct LibraryPlaceholderView: View {
 
                 Spacer()
 
-                Text(countLabel)
+                Text(countLabel(catalogAssets: catalogAssets))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -184,10 +275,10 @@ private struct LibraryPlaceholderView: View {
                 CleanupLibraryView()
             } else if shell.selection == .folders {
                 FolderSourceList()
-            } else if catalog.assets(for: shell.selection).isEmpty {
+            } else if catalogAssets.isEmpty {
                 EmptyLibraryView()
             } else {
-                CatalogAssetGrid(assets: catalog.assets(for: shell.selection))
+                CatalogAssetGrid(assets: catalogAssets)
             }
 
             Divider()
@@ -236,11 +327,11 @@ private struct LibraryPlaceholderView: View {
             : "Catalog 已在本机建立索引，原始文件不会被复制或修改。"
     }
 
-    private var countLabel: String {
+    private func countLabel(catalogAssets: [PhotoAsset]) -> String {
         if shell.selection == .applePhotos {
             return "\(applePhotos.visibleAssets.count) 个 Apple Photos 项目"
         }
-        return "\(catalog.assets(for: shell.selection).count) 张已索引"
+        return "\(catalogAssets.count) 张已索引"
     }
 }
 
@@ -448,18 +539,20 @@ private struct PersonFacePreview: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
     let face: DetectedFace
+    @State private var thumbnailState: ThumbnailViewState = .idle
+    @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
         let request = catalog.assets.first(where: { $0.id == face.assetID }).flatMap(catalog.thumbnailRequest)
-        let thumbnail = request.flatMap(thumbnails.image(for:))
 
         ZStack {
-            if let request, let thumbnail,
+            if case let .loaded(thumbnail) = thumbnailState,
+               let request,
                let preview = FacePreviewRenderer.preview(thumbnail: thumbnail, face: face, thumbnailCacheKey: request.cacheKey) {
                 Image(nsImage: preview)
                     .resizable()
                     .scaledToFill()
-            } else if request != nil {
+            } else if thumbnailState.isLoading {
                 ProgressView()
                     .controlSize(.small)
             } else {
@@ -470,12 +563,34 @@ private struct PersonFacePreview: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .onAppear {
-            if let request { thumbnails.load(request) }
+            loadThumbnail(request)
         }
         .onChange(of: request?.cacheKey) { _, _ in
-            if let request { thumbnails.load(request) }
+            loadThumbnail(request)
+        }
+        .onDisappear {
+            thumbnails.cancel(thumbnailToken)
+            thumbnailToken = nil
         }
         .accessibilityLabel("人物关联照片预览")
+    }
+
+    private func loadThumbnail(_ request: ThumbnailRequest?) {
+        thumbnails.cancel(thumbnailToken)
+        thumbnailToken = nil
+        guard let request else {
+            thumbnailState = .idle
+            return
+        }
+        if let cachedImage = thumbnails.image(for: request) {
+            thumbnailState = .loaded(cachedImage)
+            return
+        }
+        thumbnailState = .loading
+        thumbnailToken = thumbnails.load(request) { image in
+            thumbnailState = ThumbnailViewState.completed(with: image)
+            thumbnailToken = nil
+        }
     }
 }
 
@@ -484,6 +599,7 @@ private struct SearchLibraryView: View {
     @EnvironmentObject private var ocr: OCRIndexStore
 
     var body: some View {
+        let searchAssets = catalog.assets(for: .search)
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 TextField(
@@ -518,7 +634,7 @@ private struct SearchLibraryView: View {
                         .foregroundStyle(ocr.state == .paused ? Color.orange : Color.secondary)
                 }
                 Spacer()
-                Text("\(catalog.assets(for: .search).count) 个结果")
+                Text("\(searchAssets.count) 个结果")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -531,116 +647,186 @@ private struct SearchLibraryView: View {
                     systemImage: "magnifyingglass",
                     description: Text("例如：rating>=4 format:raw、camera:Sony、text:invoice、after:2026-01-01。")
                 )
-            } else if catalog.assets(for: .search).isEmpty {
+            } else if searchAssets.isEmpty {
                 ContentUnavailableView(
                     "没有匹配结果",
                     systemImage: "magnifyingglass",
                     description: Text("条件按“且”组合；可修改关键词或清空结构化条件。")
                 )
             } else {
-                CatalogAssetGrid(assets: catalog.assets(for: .search))
+                CatalogAssetGrid(assets: searchAssets)
             }
         }
     }
 }
 
 private struct ApplePhotosLibraryView: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
+    @EnvironmentObject private var importer: ApplePhotosImportCoordinator
 
     var body: some View {
         VStack(spacing: 0) {
+            controls
+            status
+
+            if applePhotos.authorization.canRead, applePhotos.state == .loaded, !applePhotos.visibleAssets.isEmpty {
+                ApplePhotosAssetGrid(assets: applePhotos.displayedAssets)
+            } else if !applePhotos.authorization.canRead {
+                ContentUnavailableView(
+                    "Apple Photos 是可选数据源",
+                    systemImage: "photo.stack",
+                    description: Text("只有点击“授权并读取 Apple Photos”后才会请求权限。未授权、受限或拒绝时，本地 Catalog 不受影响。")
+                )
+            } else if applePhotos.state == .loading || applePhotos.state == .requestingAuthorization {
+                ProgressView("正在读取 Apple Photos 索引…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if case let .failed(message) = applePhotos.state {
+                ContentUnavailableView(
+                    "无法读取 Apple Photos",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(message)
+                )
+            } else if applePhotos.state == .loaded {
+                ContentUnavailableView(
+                    "没有匹配的 Apple Photos 项目",
+                    systemImage: "photo.stack",
+                    description: Text("可调整相簿、媒体类型、日期或文件名。浏览不会下载 iCloud 原件。")
+                )
+            } else {
+                ContentUnavailableView(
+                    "尚未读取 Apple Photos",
+                    systemImage: "photo.stack",
+                    description: Text("点击“读取 Apple Photos”后才会枚举你授权范围内的项目；不会下载原件。")
+                )
+            }
+
+            importStatus
+        }
+        .task { applePhotos.refreshAuthorizationStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // 从系统设置返回时只刷新状态；权限若被关闭会清空 Apple Photos 的内存数据，绝不影响本地 Catalog。
+            applePhotos.refreshAuthorizationStatus()
+        }
+        .onChange(of: applePhotos.selectedAlbumID) { _, _ in reloadForExplicitBrowseChange() }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 9) {
             HStack(spacing: 10) {
+                Picker("浏览", selection: $applePhotos.browseFilter) {
+                    ForEach(ApplePhotosBrowseFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .frame(width: 138)
+
                 Picker("相簿", selection: $applePhotos.selectedAlbumID) {
-                    Text("全部照片").tag(String?.none)
+                    Text("所有相簿").tag(String?.none)
                     ForEach(applePhotos.albums) { album in
                         Text("\(album.title)（\(album.estimatedAssetCount)）").tag(Optional(album.id))
                     }
                 }
-                .frame(maxWidth: 320)
+                .frame(maxWidth: 260)
 
-                Toggle("仅收藏", isOn: $applePhotos.favoritesOnly)
-                    .toggleStyle(.checkbox)
-
-                Spacer()
-
-                Button(primaryButtonTitle) {
-                    applePhotos.requestAuthorizationAndLoad()
+                Picker("日期", selection: $applePhotos.dateFilter) {
+                    ForEach(ApplePhotosDateFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
                 }
-                .disabled(!canRequestOrLoad)
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 10)
+                .frame(width: 130)
 
-            HStack(alignment: .firstTextBaseline) {
-                Text(applePhotos.authorization.title)
+                TextField("按文件名筛选", text: $applePhotos.searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 140, maxWidth: 220)
+
+                Spacer(minLength: 0)
+
+                Button(primaryButtonTitle) { applePhotos.requestAuthorizationAndLoad() }
+                    .disabled(!canRequestOrLoad)
+
+                Button("导入到 PhotoAI…") {
+                    importer.chooseDestinationAndImport(
+                        assetIDs: applePhotos.selectedAssetIDs,
+                        store: applePhotos,
+                        catalog: catalog
+                    )
+                }
+                .disabled(applePhotos.selectedAssetIDs.isEmpty || importer.state.isActive)
+            }
+
+            HStack {
+                Text("当前筛选 \(applePhotos.visibleAssets.count) 项，已选择 \(applePhotos.selectedAssetIDs.count) 项")
                     .font(.footnote)
-                    .foregroundStyle(authorizationColor)
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Text(applePhotos.state.title)
+                Text("导入默认保留原始资源；Live Photo 会同时导入静态照片与配对视频。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 10)
+    }
 
-            Group {
-                if !applePhotos.authorization.canRead {
-                    ContentUnavailableView(
-                        "Apple Photos 是可选数据源",
-                        systemImage: "photo.stack",
-                        description: Text("只有点击“授权并读取 Apple Photos”后才会请求权限。未授权、受限或拒绝时，文件夹 Catalog 不受影响。")
-                    )
-                } else if applePhotos.state == .loading || applePhotos.state == .requestingAuthorization {
-                    ProgressView("正在读取 Apple Photos 索引…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if applePhotos.visibleAssets.isEmpty {
-                    ContentUnavailableView(
-                        "尚未读取 Apple Photos",
-                        systemImage: "photo.stack",
-                        description: Text("选择相簿或“仅收藏”后点击读取；iCloud 项目不会因读取索引而自动下载。")
-                    )
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(applePhotos.visibleAssets) { asset in
-                                HStack(spacing: 12) {
-                                    Image(systemName: asset.mediaKind == "视频" ? "video" : "photo")
-                                        .foregroundStyle(.tint)
-                                        .frame(width: 24)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(asset.filename)
-                                        Text(asset.createdAt?.formatted(date: .abbreviated, time: .shortened) ?? "日期未知")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if asset.isFavorite {
-                                        Image(systemName: "heart.fill")
-                                            .foregroundStyle(.red)
-                                    }
-                                    Text(asset.availability.title)
-                                        .font(.caption)
-                                        .foregroundStyle(asset.availability == .iCloudOnly ? Color.orange : Color.secondary)
-                                }
-                                .padding(.vertical, 6)
-                                Divider()
-                            }
-                        }
-                        .padding(.horizontal, 24)
+    private var status: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(applePhotos.authorization.title)
+                    .font(.footnote)
+                    .foregroundStyle(authorizationColor)
+                Text(applePhotos.authorization.nextStep)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(applePhotos.state.title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
+    private var importStatus: some View {
+        if importer.state != .idle {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    if importer.state.isActive { ProgressView().controlSize(.small) }
+                    Text(importer.state.title)
+                    Spacer()
+                    Text("\(importer.progress.completedResources)/\(importer.progress.totalResources) 个资源")
+                        .foregroundStyle(.secondary)
+                    if importer.state == .importing {
+                        Button("取消导入") { importer.cancel() }
+                            .controlSize(.small)
                     }
                 }
+                ProgressView(value: importer.progress.fractionCompleted)
+                if let filename = importer.progress.currentFilename {
+                    Text("正在处理：\(filename)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if importer.result.usedFallbackResources > 0 {
+                    Text("\(importer.result.usedFallbackResources) 个资源没有公开原始版本，已明确作为全尺寸回退资源导入。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if !importer.result.failures.isEmpty {
+                    Text("\(importer.result.failures.count) 个资源未导入；已成功写入的文件仍会接入本地 Catalog。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
-
-            if case let .failed(message) = applePhotos.state {
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 10)
-            }
+            .font(.footnote)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 10)
+            .background(.quaternary)
         }
-        .task { applePhotos.refreshAuthorizationStatus() }
     }
 
     private var primaryButtonTitle: String {
@@ -661,6 +847,148 @@ private struct ApplePhotosLibraryView: View {
         case .notDetermined, .unavailable: .secondary
         case .denied, .restricted: .red
         }
+    }
+
+    private func reloadForExplicitBrowseChange() {
+        guard applePhotos.authorization.canRead else { return }
+        applePhotos.loadSelectedSource()
+    }
+}
+
+private struct ApplePhotosAssetGrid: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+    let assets: [ApplePhotosAsset]
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: shell.gridDensity.minimumThumbnailWidth), spacing: 14)],
+                spacing: 14
+            ) {
+                ForEach(assets) { asset in
+                    ApplePhotosAssetCell(asset: asset)
+                }
+            }
+            .padding(24)
+
+            if applePhotos.hasMoreVisibleAssets {
+                VStack(spacing: 8) {
+                    Text("已显示 \(assets.count) / \(applePhotos.visibleAssets.count) 项")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("显示更多") { applePhotos.showMoreAssets() }
+                }
+                .padding(.bottom, 24)
+            }
+        }
+    }
+}
+
+private struct ApplePhotosAssetCell: View {
+    @EnvironmentObject private var shell: AppShellModel
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+    let asset: ApplePhotosAsset
+    @State private var thumbnail: NSImage?
+    @State private var availability: ApplePhotosAsset.Availability = .unknown
+
+    private var targetSize: CGSize {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let edge = shell.gridDensity.minimumThumbnailWidth * scale
+        return CGSize(width: edge, height: edge)
+    }
+
+    var body: some View {
+        let isSelected = applePhotos.selectedAssetIDs.contains(asset.id)
+        Button {
+            applePhotos.select(assetID: asset.id)
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 8).fill(.quaternary)
+                if let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .interpolation(.medium)
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    VStack(spacing: 7) {
+                        Image(systemName: asset.mediaType.systemImage)
+                            .font(.title2)
+                        Text(availability == .iCloudOnly ? "来自 iCloud" : "缩略图不可用")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .aspectRatio(4 / 3, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .topLeading) { topLeadingOverlay }
+            .overlay(alignment: .topTrailing) { topTrailingOverlay }
+            .overlay(alignment: .bottomTrailing) { bottomTrailingOverlay }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
+            }
+        }
+        .buttonStyle(.plain)
+        .task(id: "\(asset.id)-\(Int(targetSize.width))") {
+            applePhotos.preheatThumbnail(for: asset.id, targetSize: targetSize)
+            async let loadedThumbnail = applePhotos.thumbnail(for: asset.id, targetSize: targetSize)
+            async let loadedAvailability = applePhotos.resolveAvailability(for: asset.id)
+            let resultThumbnail = await loadedThumbnail
+            let resultAvailability = await loadedAvailability
+            guard !Task.isCancelled else { return }
+            thumbnail = resultThumbnail
+            availability = resultAvailability
+        }
+        .accessibilityLabel(accessibilityLabel)
+        // 使用等价的可访问性值，保留选中状态的朗读，同时避免在大型网格中
+        // 对 Button trait 集合做动态变更。
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+    }
+
+    @ViewBuilder
+    private var topLeadingOverlay: some View {
+        HStack(spacing: 4) {
+            if asset.isFavorite { Image(systemName: "heart.fill").foregroundStyle(.red) }
+            if asset.isRAW { Text("RAW").fontWeight(.bold) }
+            if asset.isLivePhoto { Image(systemName: "livephoto") }
+        }
+        .font(.caption2)
+        .padding(5)
+        .foregroundStyle(.white)
+        .background(.black.opacity(0.58), in: Capsule())
+        .padding(6)
+    }
+
+    @ViewBuilder
+    private var topTrailingOverlay: some View {
+        if availability == .iCloudOnly {
+            Image(systemName: "icloud")
+                .font(.caption)
+                .padding(6)
+                .foregroundStyle(.white)
+                .background(.black.opacity(0.58), in: Circle())
+                .padding(6)
+        }
+    }
+
+    @ViewBuilder
+    private var bottomTrailingOverlay: some View {
+        if let duration = asset.durationText {
+            Text(duration)
+                .font(.caption2.monospacedDigit())
+                .padding(5)
+                .foregroundStyle(.white)
+                .background(.black.opacity(0.58), in: Capsule())
+                .padding(6)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        [asset.filename, asset.mediaType.title, availability.title, asset.isRAW ? "RAW" : nil, asset.isLivePhoto ? "Live Photo" : nil]
+            .compactMap { $0 }
+            .joined(separator: "，")
     }
 }
 
@@ -1003,17 +1331,26 @@ private struct EmptyLibraryView: View {
 private struct CatalogAssetGrid: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
 
     let assets: [PhotoAsset]
 
     var body: some View {
+        // 范围选择只需一份稳定顺序，不能为每个 Cell 重复建立 N 元素数组。
+        let orderedAssetIDs = assets.map(\.id)
+        // 仅编辑器返回时递增；读取它会把这次受控刷新传给已实例化的 Cell。
+        let thumbnailRefreshGeneration = thumbnails.visibleSubscriberGeneration
         ScrollView {
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: shell.gridDensity.minimumThumbnailWidth), spacing: 14)],
                 spacing: 14
             ) {
                 ForEach(assets) { asset in
-                    CatalogAssetCell(asset: asset, orderedAssetIDs: assets.map(\.id))
+                    CatalogAssetCell(
+                        asset: asset,
+                        orderedAssetIDs: orderedAssetIDs,
+                        thumbnailRefreshGeneration: thumbnailRefreshGeneration
+                    )
                 }
             }
             .padding(24)
@@ -1027,12 +1364,18 @@ private struct CatalogAssetCell: View {
 
     let asset: PhotoAsset
     let orderedAssetIDs: [UUID]
+    let thumbnailRefreshGeneration: Int
+    @State private var thumbnailState: ThumbnailViewState = .idle
+    @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
         let request = catalog.thumbnailRequest(for: asset)
-        let image = request.flatMap(thumbnails.image(for:))
         let isSelected = catalog.selectedAssetIDs.contains(asset.id)
-        let hasFinishedLoading = request.map { thumbnails.completedKeys.contains($0.cacheKey) } ?? true
+        // 编辑器覆盖层关闭时，macOS 有机会保留 Cell 却丢失它的局部 State。
+        // 缓存是缩略图的权威来源；在展示层直接兜底可避免这类 Cell 把已解码的
+        // 图像误画成空白占位符。`thumbnailRefreshGeneration` 仍负责为缓存未命中
+        // 的可见 Cell 重新接入已有加载任务。
+        let displayedThumbnail = thumbnailState.loadedImage ?? request.flatMap(thumbnails.image(for:))
 
         Button {
             catalog.select(assetID: asset.id, in: orderedAssetIDs)
@@ -1042,18 +1385,22 @@ private struct CatalogAssetCell: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(.quaternary)
 
-                    if let image {
-                        Image(nsImage: image)
+                    if let displayedThumbnail {
+                        Image(nsImage: displayedThumbnail)
                             .resizable()
                             .interpolation(.medium)
                             .aspectRatio(contentMode: .fill)
-                    } else if asset.mediaType == .video || hasFinishedLoading {
+                    } else if asset.mediaType == .video {
                         Image(systemName: asset.systemImage)
                             .font(.title2)
                             .foregroundStyle(.secondary)
-                    } else {
+                    } else if thumbnailState.isLoading {
                         ProgressView()
                             .controlSize(.small)
+                    } else {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .aspectRatio(4 / 3, contentMode: .fit)
@@ -1093,17 +1440,38 @@ private struct CatalogAssetCell: View {
         }
         .buttonStyle(.plain)
         .onAppear {
-            if let request {
-                thumbnails.load(request)
-            }
+            loadThumbnail(request)
         }
         .onChange(of: request?.cacheKey) { _, _ in
-            if let request {
-                thumbnails.load(request)
-            }
+            loadThumbnail(request)
+        }
+        .onChange(of: thumbnailRefreshGeneration) { _, _ in
+            loadThumbnail(request)
+        }
+        .onDisappear {
+            thumbnails.cancel(thumbnailToken)
+            thumbnailToken = nil
         }
         .accessibilityLabel("\(asset.filename)，\(asset.metadataSummary)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func loadThumbnail(_ request: ThumbnailRequest?) {
+        thumbnails.cancel(thumbnailToken)
+        thumbnailToken = nil
+        guard let request else {
+            thumbnailState = .idle
+            return
+        }
+        if let cachedImage = thumbnails.image(for: request) {
+            thumbnailState = .loaded(cachedImage)
+            return
+        }
+        thumbnailState = .loading
+        thumbnailToken = thumbnails.load(request) { image in
+            thumbnailState = ThumbnailViewState.completed(with: image)
+            thumbnailToken = nil
+        }
     }
 }
 
@@ -1215,6 +1583,96 @@ private struct InspectorView: View {
         case 0: "无"
         case 1: "1 张"
         default: "\(catalog.selectedAssetIDs.count) 张"
+        }
+    }
+}
+
+private struct ApplePhotosInspectorView: View {
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if let asset = applePhotos.selectedAsset {
+                    ApplePhotosPreview(asset: asset)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 230)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    GroupBox("Apple Photos 检查器") {
+                        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                            metadataRow("文件名", asset.filename)
+                            metadataRow("创建日期", asset.createdAt?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                            metadataRow("修改日期", asset.modifiedAt?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                            metadataRow("尺寸", asset.displayDimensions)
+                            metadataRow("媒体类型", asset.mediaType.title)
+                            if let duration = asset.durationText { metadataRow("时长", duration) }
+                            metadataRow("收藏", asset.isFavorite ? "是" : "否")
+                            metadataRow("RAW", asset.isRAW ? "是" : "否")
+                            metadataRow("Live Photo", asset.isLivePhoto ? "是" : "否")
+                            metadataRow("资源状态", applePhotos.availability(for: asset).title)
+                        }
+                        .font(.footnote)
+                    }
+
+                    Text("Apple Photos 不提供公开的真实文件路径；需要使用时请“导入到 PhotoAI…”。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !applePhotos.selectedAssetIDs.isEmpty {
+                    ContentUnavailableView(
+                        "已选择 \(applePhotos.selectedAssetIDs.count) 个项目",
+                        systemImage: "checkmark.circle",
+                        description: Text("可使用“导入到 PhotoAI…”把所选原始资源复制到你选择的本地文件夹。")
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "选择一个 Apple Photos 项目",
+                        systemImage: "photo",
+                        description: Text("预览只请求适合屏幕的无网络图像，不会自动下载 iCloud 原件。")
+                    )
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    @ViewBuilder
+    private func metadataRow(_ title: String, _ value: String) -> some View {
+        GridRow {
+            Text(title).foregroundStyle(.secondary)
+            Text(value).textSelection(.enabled)
+        }
+    }
+}
+
+private struct ApplePhotosPreview: View {
+    @EnvironmentObject private var applePhotos: ApplePhotosStore
+    let asset: ApplePhotosAsset
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(.quaternary)
+            if let image = applePhotos.previewImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(4)
+            } else if applePhotos.availability(for: asset) == .iCloudOnly {
+                VStack(spacing: 8) {
+                    Image(systemName: "icloud")
+                    Text("来自 iCloud")
+                    Text("浏览不会自动下载原件。")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+            } else {
+                ProgressView("正在请求屏幕预览…")
+                    .controlSize(.small)
+            }
+        }
+        .task(id: asset.id) {
+            await applePhotos.loadPreview(for: asset.id, targetSize: CGSize(width: 1_600, height: 1_200))
         }
     }
 }

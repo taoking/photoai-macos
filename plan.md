@@ -2,7 +2,61 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 12.5 — Catalog Identity & Scale Hardening
+## 当前阶段：Phase 15 — Apple Photos 系统相册接入
+
+### 切换性能修复（已完成）
+
+- [x] 在含 922 项本地 Catalog 的实际 app 中复现并采样反复侧栏切换；定位到重复 ID 构建、全局缩略图完成通知和 Apple Photos 全库即时筛选造成的主线程压力。
+- [x] 消除重复 ID 构建与全局缩略图完成通知，改为有界缓存和按 Cell 更新；离屏 Cell 会撤销其回调，避免待更新视图累积。
+- [x] 缓存 Apple Photos 筛选结果和进行中的缩略图/可用性请求；完成 7 轮实际侧栏切换、空闲进程采样、`swift test` 与 `xcodebuild test` 回归。
+
+### Phase 15 Final Fix（进行中）
+
+- [x] 确认 Final Fix 仅涵盖本地缩略图失败状态、快速相簿切换与预热顺序。
+- [x] 以 Cell 本地状态表现缩略图加载失败，且保持 `ThumbnailStore.completedKeys` 非 `@Published`。
+- [x] 为 Apple Photos 加入取消加 generation 双重保护，保证 Latest Selection Wins。
+- [x] 将缩略图预热判重移动到 `PHAsset` 查询之前，并新增纯模型回归测试。
+- [x] 完成 Xcode 27 build/test、本地 922 张 Catalog 的 10 轮侧栏性能回归，更新验证文档与 Draft PR #3；真实相簿切换因本轮调试包未授权而如实保留为待复测。
+
+### 编辑器返回图库空白修复（已完成）
+
+- [x] 确认 Catalog 快照仍含 922 项，两个本地来源路径均可访问；问题不是 Catalog 数据丢失。
+- [x] 保留编辑器下方的图库视图树，避免完成调色后销毁并重建所有可见缩略图 Cell。
+- [x] 完成 Xcode 27 自动化回归、Catalog/源文件可读性复核与新构建启动；真实点击式 JPEG 编辑器往返已验证。
+- [x] 在编辑器退出时一次性重新连接可见缩略图订阅；Cell 优先从缓存恢复、否则加入既有加载，不恢复逐张图全局刷新。
+- [x] 在 Cell 的局部缩略图状态异常丢失时，展示层直接回退到已有内存缓存，避免已解码照片误显示为空白占位。
+- [x] 将侧边栏选择定义为退出编辑器的导航操作，并为模型语义和缩略图刷新信号增加自动化回归。
+
+### 编辑器返回图库全空白复发排查（已完成）
+
+- [x] 收到真实使用反馈：编辑页内操作后切回主页面，整个主内容为空白，重启应用才恢复；此前仅针对缩略图 Cell 的缓存兜底不足。
+- [x] 发现实际启动的两个 `.app` 二进制仍停留在 8 月 12/13 日；最新 8 月 24 日源码修复从未进入运行包。用当前源码重新组装独立调试包后，真实“调整曝光 → 返回所有照片”路径不再空白。
+- [x] 修复侧边栏绕过 `AppShellModel.select(_:)` 的入口；编辑时再次点击已选中的“所有照片”也会明确退出编辑器。
+- [x] 新增统一调试包构建脚本并更新 README，确保 `.build/PhotoAI-Mac.app` 始终装入刚编译的可执行文件并完成临时签名。
+- [x] 完成 70 项 Swift/Xcode 自动测试、脚本语法与签名验证；最终调试包已启动，真实 JPEG 调整后通过同一“所有照片”侧栏入口返回，922 项网格与可见缩略图保持正常。
+
+### 历史 Logo 恢复（已完成）
+
+- [x] 定位历史提交 `bd7e6a1`，确认原始 PNG、macOS `.icns`、SwiftPM 资源声明、侧边栏品牌区和运行时图标配置完整。
+- [x] 恢复 PNG 母版、SwiftPM 运行时 PNG 与 macOS `.icns`；适配当前侧边栏，并让调试包脚本同时复制 `.icns` 和 SwiftPM 资源 bundle。
+- [x] 通过显式 `Bundle.module` / `NSImage` 加载统一设置运行时图标与侧边栏 Logo；真实应用中品牌图标和文字均正常显示。
+- [x] 完成 71 项 Swift/Xcode 自动测试、资源可用性回归、应用包 `Info.plist`/资源清单、ad-hoc 签名和真实 UI 验证。
+
+### Phase 15 合并与 Release 打包（进行中）
+
+- [x] 确认版本沿用 `0.1.0 (1)`，不擅自创建 Git tag 或 GitHub Release。
+- [x] 补充可重复的 Release 打包脚本，确保 `.icns` 与 SwiftPM 品牌资源进入应用包，并拒绝覆盖既有产物。
+- [ ] 在合并后的 `main` 上完成 Swift/Xcode 测试、Release 构建、签名、压缩包与 SHA-256 验证。
+- [ ] 将 PR #3 从 Draft 转为可审查并合并、推送 `main`，记录最终提交和产物路径。
+
+### Phase 15 — Apple Photos 系统相册接入（已实现；真实全库读取与渐进网格已验，剩余受控运行时复测待审）
+
+- [x] 从 `main` 建立独立 `agent/phase-15-apple-photos` 分支；不混入尚未合并的 Phase 14 PR #2。
+- [x] 按本机 Xcode 27 / macOS 27 SDK 核对 PhotoKit 公共授权、缓存缩略图和原始资源导出接口。
+- [x] 重构独立 Apple Photos 内存模型、授权状态、筛选、相簿与惰性 iCloud 状态。
+- [x] 实现可扩展的真实缩略图网格、多选、受限预览与检查器；大图库改为 240 项首屏与“显示更多”，防止一次性物化数万个 Cell。
+- [x] 实现用户选择目录后的原始资源导入、冲突安全命名、进度、取消与 Catalog 接入。
+- [x] 补充纯模型测试、真实完整授权后的 35,214 项读取/首屏/文件名筛选复测，并如实记录自动化 Accessibility 管道对预览验证的阻断；完成构建测试、提交、推送及 Draft PR #3；未合并、不创建 Release。
 
 ### Phase 0 — SDK / Reuse Spike（已完成）
 
@@ -123,5 +177,5 @@
 
 - 目录未提供 iOS 工程或可复用模块，因此暂不能做跨项目复用验证。
 - Xcode 27.0 Beta 的 SDK API 仍可能变化；系统更新后应重跑 Vision、Media Intelligence、PhotoKit 与 RAW 相关验证。
-- Apple Photos 调试 App 当前未获系统授权；授权、有限授权和 iCloud 仅云端资产的实际读取回调仍待用户主动授权后的复测。
+- Apple Photos 已在真实完整授权下读取 35,214 项并验证首屏渐进加载与文件名筛选；有限授权、仅云端 iCloud 项、显式导入，以及预览/多选的自动化运行时复测仍待完成（后者受 macOS 27 beta 的 Accessibility 自动化管道影响）。
 - 尚未选择开源许可证，也尚未生成带版本号的 release 产物；本次仅按授权创建公开源码仓库并推送 `main`。

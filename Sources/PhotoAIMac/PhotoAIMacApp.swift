@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -14,6 +15,13 @@ struct PhotoAIMacApp: App {
     @StateObject private var ocr = OCRIndexStore()
     @StateObject private var people = PeopleStore()
     @StateObject private var applePhotos = ApplePhotosStore()
+    @StateObject private var applePhotosImporter = ApplePhotosImportCoordinator()
+
+    init() {
+        if let icon = PhotoAIBrandAssets.logoImage {
+            NSApplication.shared.applicationIconImage = icon
+        }
+    }
 
     var body: some Scene {
         WindowGroup("PhotoAI Mac") {
@@ -30,6 +38,7 @@ struct PhotoAIMacApp: App {
                 .environmentObject(ocr)
                 .environmentObject(people)
                 .environmentObject(applePhotos)
+                .environmentObject(applePhotosImporter)
         }
         .defaultSize(width: 1_360, height: 860)
         .commands {

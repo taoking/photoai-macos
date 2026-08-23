@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import PhotoAIMac
@@ -64,13 +65,48 @@ struct StabilityHardeningTests {
             mediaType: .image
         )
         let store = ThumbnailStore()
-        store.load(request)
+        store.load(request) { _ in }
 
         for _ in 0..<100 where !store.completedKeys.contains(request.cacheKey) {
             try? await Task.sleep(for: .milliseconds(10))
         }
         #expect(store.completedKeys.contains(request.cacheKey))
         #expect(store.image(for: request) == nil)
+    }
+
+    @Test
+    func thumbnailFailureTransitionsToFailedState() {
+        let state = ThumbnailViewState.completed(with: nil)
+
+        #expect(state.isFailed)
+        #expect(!state.isLoading)
+        #expect(state.loadedImage == nil)
+    }
+
+    @Test
+    func loadedThumbnailStateRetainsItsImageForDisplayFallback() {
+        let image = NSImage(size: NSSize(width: 12, height: 8))
+        let state = ThumbnailViewState.completed(with: image)
+
+        #expect(state.loadedImage === image)
+    }
+
+    @Test
+    @MainActor
+    func editorReturnRequestsOneVisibleThumbnailRefresh() {
+        let store = ThumbnailStore()
+
+        #expect(store.visibleSubscriberGeneration == 0)
+        store.refreshVisibleSubscribers()
+        #expect(store.visibleSubscriberGeneration == 1)
+    }
+
+    @Test
+    func personPreviewThumbnailFailureDoesNotStayLoading() {
+        let state = ThumbnailViewState.completed(with: nil)
+
+        #expect(state.isFailed)
+        #expect(!state.isLoading)
     }
 
     @Test

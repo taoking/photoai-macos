@@ -8,6 +8,8 @@
     <string>PhotoAIMac</string>
     <key>CFBundleIdentifier</key>
     <string>com.taoking.PhotoAIMac</string>
+    <key>CFBundleIconFile</key>
+    <string>PhotoAI-Mac</string>
     <key>CFBundleName</key>
     <string>PhotoAI Mac</string>
     <key>CFBundlePackageType</key>
@@ -21,6 +23,6 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>PhotoAI Mac 仅在你主动授权后读取 Apple Photos 的照片、相簿和本机/iCloud 可用性；不会修改 Apple Photos 内容。</string>
+	<string>PhotoAI Mac 仅在你主动选择浏览或导入照片时访问 Apple Photos，不会修改 Apple Photos 内容。</string>
 </dict>
 </plist>
