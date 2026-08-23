@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PhotoAIMac
 
@@ -49,6 +50,37 @@ struct AppShellModelTests {
 
         #expect(!shell.isEditorPresented)
         #expect(shell.selection == .allPhotos)
+    }
+
+    @Test
+    @MainActor
+    func photoViewerPreservesContextAndNavigatesWithoutEditing() {
+        let shell = AppShellModel()
+        let ids = [UUID(), UUID(), UUID()]
+        let items = ids.map { PhotoViewerItem.catalog($0) }
+
+        shell.presentPhotoViewer(item: items[1], in: items)
+        #expect(shell.isPhotoViewerPresented)
+        #expect(!shell.isEditorPresented)
+        #expect(shell.movePhotoViewer(offset: 1) == items[2])
+        #expect(!shell.canMovePhotoViewer(offset: 1))
+
+        shell.dismissPhotoViewer()
+        #expect(!shell.isPhotoViewerPresented)
+        #expect(shell.selection == .allPhotos)
+    }
+
+    @Test
+    @MainActor
+    func selectingDestinationExitsPhotoViewer() {
+        let shell = AppShellModel()
+        let item = PhotoViewerItem.catalog(UUID())
+        shell.presentPhotoViewer(item: item, in: [item])
+
+        shell.select(.favorites)
+
+        #expect(!shell.isPhotoViewerPresented)
+        #expect(shell.selection == .favorites)
     }
 
     @Test
