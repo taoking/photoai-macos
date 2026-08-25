@@ -7,8 +7,21 @@ struct AppCommands: Commands {
     @ObservedObject var batch: BatchWorkflowStore
     @ObservedObject var originalExporter: OriginalPhotoExportStore
     @ObservedObject var applePhotos: ApplePhotosStore
+    @ObservedObject var photoCulling: PhotoCullingSessionStore
 
     var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button(catalog.metadataUndoActionTitle.map { "撤销\($0)" } ?? "撤销") {
+                if photoCulling.isPresented {
+                    _ = photoCulling.undoLastOperation(catalog: catalog)
+                } else {
+                    _ = catalog.undoLastMetadataOperation()
+                }
+            }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(!catalog.canUndoMetadataOperation)
+        }
+
         CommandGroup(after: .newItem) {
             Button("添加照片文件夹…") {
                 catalog.chooseAndAddFolder()
@@ -38,6 +51,13 @@ struct AppCommands: Commands {
                 togglePhotoViewer()
             }
             .keyboardShortcut(.space, modifiers: [])
+            .disabled(shell.isTextInputActive)
+
+            Button(photoCulling.isPresented ? "退出快速筛选" : "快速筛选模式") {
+                toggleCullingMode()
+            }
+            .keyboardShortcut("k", modifiers: [.command, .shift])
+            .disabled(shell.selection == .applePhotos || (!photoCulling.isPresented && visibleAssetIDs.isEmpty))
 
             Button("关闭大图预览") {
                 shell.dismissPhotoViewer()
@@ -68,7 +88,7 @@ struct AppCommands: Commands {
                 shell.announce("已选择当前筛选的 \(visibleAssetIDs.count) 个项目。")
             }
             .keyboardShortcut("a", modifiers: .command)
-            .disabled(shell.selection == .applePhotos || visibleAssetIDs.isEmpty)
+            .disabled(photoCulling.isPresented || shell.selection == .applePhotos || visibleAssetIDs.isEmpty)
 
             Menu("导出原始照片") {
                 Button("导出所选原文件…") {
@@ -83,6 +103,27 @@ struct AppCommands: Commands {
                     )
                 }
                 .disabled(visibleAssetIDs.isEmpty)
+
+                Divider()
+
+                Button("导出 Pick（保持目录结构）…") {
+                    exportOriginals(matching: .picks)
+                }
+                .disabled(catalog.assets(for: shell.selection, filter: .picks).isEmpty)
+
+                Button("导出五星（保持目录结构）…") {
+                    exportOriginals(matching: .fiveStars)
+                }
+                .disabled(catalog.assets(for: shell.selection, filter: .fiveStars).isEmpty)
+
+                Button("导出当前筛选并保持目录结构…") {
+                    originalExporter.chooseDestinationAndStart(
+                        assets: catalog.assets(for: shell.selection),
+                        catalog: catalog,
+                        preserveDirectoryStructure: true
+                    )
+                }
+                .disabled(visibleAssetIDs.isEmpty)
             }
             .disabled(originalExporter.state.isActive || shell.selection == .applePhotos)
 
@@ -92,7 +133,7 @@ struct AppCommands: Commands {
                 shell.presentEditor()
             }
             .keyboardShortcut("e", modifiers: [])
-            .disabled(catalog.selectedAsset?.supportsEditing != true)
+            .disabled(shell.isTextInputActive || photoCulling.isPresented || catalog.selectedAsset?.supportsEditing != true)
 
             Button("导入 .cube LUT…") {
                 luts.chooseAndImport()
@@ -107,7 +148,7 @@ struct AppCommands: Commands {
                 }
             }
             .keyboardShortcut("c", modifiers: [.command, .option])
-            .disabled(catalog.selectedAssetIDs.isEmpty)
+            .disabled(photoCulling.isPresented || catalog.selectedAssetIDs.isEmpty)
 
             Button("粘贴调整") {
                 if batch.pasteAdjustments(to: catalog.selectedAssetIDs, catalog: catalog) {
@@ -115,7 +156,7 @@ struct AppCommands: Commands {
                 }
             }
             .keyboardShortcut("v", modifiers: [.command, .option])
-            .disabled(batch.copiedRecipe == nil || catalog.selectedAssetIDs.isEmpty)
+            .disabled(photoCulling.isPresented || batch.copiedRecipe == nil || catalog.selectedAssetIDs.isEmpty)
 
             Button("同步调整") {
                 if let anchor = catalog.selectionAnchorAsset,
@@ -124,7 +165,7 @@ struct AppCommands: Commands {
                 }
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
-            .disabled(catalog.selectionAnchorAsset == nil || catalog.selectedAssetIDs.count < 2)
+            .disabled(photoCulling.isPresented || catalog.selectionAnchorAsset == nil || catalog.selectedAssetIDs.count < 2)
 
             Menu("批量导出") {
                 ForEach(batch.presets) { preset in
@@ -133,7 +174,12 @@ struct AppCommands: Commands {
                     }
                 }
             }
-            .disabled(catalog.selectedAssetIDs.isEmpty || batch.state == .running || batch.state == .cancelling)
+            .disabled(
+                photoCulling.isPresented
+                    || catalog.selectedAssetIDs.isEmpty
+                    || batch.state == .running
+                    || batch.state == .cancelling
+            )
 
             if batch.state == .running || batch.state == .cancelling {
                 Button("取消批量导出") {
@@ -148,47 +194,55 @@ struct AppCommands: Commands {
                 navigate(offset: -1)
             }
             .keyboardShortcut(.leftArrow, modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("下一张") {
                 navigate(offset: 1)
             }
             .keyboardShortcut(.rightArrow, modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Divider()
 
             ForEach(1...5, id: \.self) { rating in
                 Button("评为 \(rating) 星") {
-                    catalog.setRating(rating)
+                    applyCullingShortcut(.rating(rating))
                 }
                 .keyboardShortcut(KeyEquivalent(Character("\(rating)")), modifiers: [])
+                .disabled(shell.isTextInputActive)
             }
 
             Button("清除评分") {
-                catalog.setRating(0)
+                applyCullingShortcut(.rating(0))
             }
             .keyboardShortcut("0", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Divider()
 
             Button("Pick") {
-                catalog.setFlag(.pick)
+                applyCullingShortcut(.pick)
             }
             .keyboardShortcut("p", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("Reject") {
-                catalog.setFlag(.reject)
+                applyCullingShortcut(.reject)
             }
             .keyboardShortcut("x", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("取消标记") {
-                catalog.setFlag(.none)
+                applyCullingShortcut(.clearFlag)
             }
             .keyboardShortcut("u", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("切换收藏") {
                 catalog.toggleFavorite()
             }
             .keyboardShortcut("f", modifiers: [])
+            .disabled(shell.isTextInputActive)
         }
     }
 
@@ -204,6 +258,11 @@ struct AppCommands: Commands {
     }
 
     private func togglePhotoViewer() {
+        if photoCulling.isPresented {
+            photoCulling.dismiss()
+            shell.announce("已返回图库。")
+            return
+        }
         if shell.isPhotoViewerPresented {
             shell.dismissPhotoViewer()
             return
@@ -223,6 +282,10 @@ struct AppCommands: Commands {
     }
 
     private func navigate(offset: Int) {
+        if photoCulling.isPresented {
+            _ = photoCulling.perform(offset < 0 ? .previous : .next, catalog: catalog)
+            return
+        }
         if shell.isPhotoViewerPresented, let item = shell.movePhotoViewer(offset: offset) {
             synchronizeSelection(with: item)
             return
@@ -242,5 +305,43 @@ struct AppCommands: Commands {
     private func exportSelectedOriginals() {
         let assets = catalog.selectedAssets(orderedBy: visibleAssetIDs)
         originalExporter.chooseDestinationAndStart(assets: assets, catalog: catalog)
+    }
+
+    private func toggleCullingMode() {
+        if photoCulling.isPresented {
+            photoCulling.dismiss()
+            shell.announce("已退出快速筛选并返回图库。")
+            return
+        }
+        let assets = catalog.assets(for: shell.selection)
+        guard let focusedID = (catalog.selectionAnchorAsset ?? catalog.selectedAsset)?.id ?? assets.first?.id else {
+            return
+        }
+        shell.dismissPhotoViewer(announce: false)
+        photoCulling.start(assets: assets, focusedAssetID: focusedID)
+        catalog.selectSingle(assetID: focusedID)
+        shell.announce("快速筛选模式：方向键切换，1–5 评分，P/X/U 标记，Esc 退出。")
+    }
+
+    private func applyCullingShortcut(_ shortcut: PhotoCullingShortcut) {
+        if photoCulling.isPresented {
+            _ = photoCulling.perform(shortcut, catalog: catalog)
+            return
+        }
+        switch shortcut {
+        case let .rating(rating): catalog.setRating(rating)
+        case .pick: catalog.setFlag(.pick)
+        case .reject: catalog.setFlag(.reject)
+        case .clearFlag: catalog.setFlag(.none)
+        default: break
+        }
+    }
+
+    private func exportOriginals(matching filter: LibraryFilter) {
+        originalExporter.chooseDestinationAndStart(
+            assets: catalog.assets(for: shell.selection, filter: filter),
+            catalog: catalog,
+            preserveDirectoryStructure: true
+        )
     }
 }

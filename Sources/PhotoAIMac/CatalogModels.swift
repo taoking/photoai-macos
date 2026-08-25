@@ -162,6 +162,14 @@ enum PhotoFlag: String, Hashable, Sendable {
     case none
     case pick = "picked"
     case reject = "rejected"
+
+    var title: String {
+        switch self {
+        case .none: "无"
+        case .pick: "Pick"
+        case .reject: "Reject"
+        }
+    }
 }
 
 enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {

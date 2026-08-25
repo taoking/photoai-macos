@@ -13,6 +13,7 @@ struct PhotoAIMacApp: App {
     @StateObject private var batch = BatchWorkflowStore()
     @StateObject private var cleanup = CleanupWorkflowStore()
     @StateObject private var culling = CullingWorkflowStore()
+    @StateObject private var photoCulling = PhotoCullingSessionStore()
     @StateObject private var ocr = OCRIndexStore()
     @StateObject private var people = PeopleStore()
     @StateObject private var applePhotos = ApplePhotosStore()
@@ -38,6 +39,7 @@ struct PhotoAIMacApp: App {
                 .environmentObject(batch)
                 .environmentObject(cleanup)
                 .environmentObject(culling)
+                .environmentObject(photoCulling)
                 .environmentObject(ocr)
                 .environmentObject(people)
                 .environmentObject(applePhotos)
@@ -52,7 +54,8 @@ struct PhotoAIMacApp: App {
                 luts: luts,
                 batch: batch,
                 originalExporter: originalPhotoExporter,
-                applePhotos: applePhotos
+                applePhotos: applePhotos,
+                photoCulling: photoCulling
             )
         }
 

@@ -8,6 +8,10 @@ final class AppShellModel: ObservableObject {
     @Published private(set) var photoViewerItem: PhotoViewerItem? = nil
     @Published var gridDensity: GridDensity = .comfortable
     @Published private(set) var statusMessage = "准备就绪 — 原始照片始终保持不变。"
+    /// 任意文本输入框（搜索、重命名、颜色标签、备注等）当前是否处于聚焦编辑状态。
+    /// 无修饰键菜单快捷键（方向键、数字、P/X/U/E/F 等）在此期间会被禁用，
+    /// 避免 AppKit 的菜单键等效匹配抢在文本框之前吞掉按键。
+    @Published var isTextInputActive = false
     private var photoViewerContext: [PhotoViewerItem] = []
 
     var isPhotoViewerPresented: Bool { photoViewerItem != nil }

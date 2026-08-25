@@ -10,6 +10,7 @@ struct AppShellView: View {
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
     @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
+    @EnvironmentObject private var photoCulling: PhotoCullingSessionStore
 
     var body: some View {
         NavigationSplitView {
@@ -19,7 +20,10 @@ struct AppShellView: View {
             SidebarView(
                 selection: Binding(
                     get: { shell.selection },
-                    set: { shell.select($0) }
+                    set: {
+                        photoCulling.dismiss()
+                        shell.select($0)
+                    }
                 )
             )
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
@@ -39,14 +43,18 @@ struct AppShellView: View {
                             .frame(minWidth: 250, idealWidth: 300, maxWidth: 380)
                     }
                 }
-                .allowsHitTesting(!shell.isEditorPresented && !shell.isPhotoViewerPresented)
-                .accessibilityHidden(shell.isEditorPresented || shell.isPhotoViewerPresented)
+                .allowsHitTesting(!shell.isEditorPresented && !shell.isPhotoViewerPresented && !photoCulling.isPresented)
+                .accessibilityHidden(shell.isEditorPresented || shell.isPhotoViewerPresented || photoCulling.isPresented)
 
                 // 让图库在编辑期间留在同一视图树中。此前用条件分支替换整个 detail，
                 // 返回时会一次性销毁并重建所有可见 LazyVGrid Cell；在快速切换或调色
                 // 后这会让缩略图订阅错过更新，看起来像“所有照片空白”。编辑器覆盖在
                 // 保留的图库之上，完成后可立即显示已有缩略图状态与内存缓存。
-                if shell.isPhotoViewerPresented {
+                if photoCulling.isPresented {
+                    PhotoCullingView()
+                        .background(.background)
+                        .accessibilityAddTraits(.isModal)
+                } else if shell.isPhotoViewerPresented {
                     PhotoViewerView()
                         .background(.background)
                         .accessibilityAddTraits(.isModal)
@@ -65,6 +73,7 @@ struct AppShellView: View {
             if shell.isEditorPresented {
                 shell.dismissEditor()
             }
+            photoCulling.dismiss()
             catalog.clearSelection()
             if shell.selection != .applePhotos { applePhotos.clearSelection() }
         }
@@ -88,6 +97,7 @@ struct AppShellView: View {
                 } label: {
                     Label("添加来源", systemImage: "plus")
                 }
+                .disabled(photoCulling.isPresented)
 
                 Picker("缩略图大小", selection: $shell.gridDensity) {
                     ForEach(GridDensity.allCases) { density in
@@ -95,6 +105,7 @@ struct AppShellView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .disabled(photoCulling.isPresented)
 
                 Picker("筛选", selection: $catalog.filter) {
                     ForEach(LibraryFilter.allCases) { filter in
@@ -102,20 +113,30 @@ struct AppShellView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .disabled(photoCulling.isPresented)
 
                 Button {
                     presentSelectedPhotoViewer()
                 } label: {
                     Label("大图预览", systemImage: "rectangle.inset.filled.and.person.filled")
                 }
-                .disabled(!canPresentSelectedPhotoViewer)
+                .disabled(photoCulling.isPresented || !canPresentSelectedPhotoViewer)
                 .help("大图预览选中照片 (Space)")
+
+                Button {
+                    presentPhotoCulling()
+                } label: {
+                    Label("快速筛选", systemImage: "rectangle.stack.badge.play")
+                }
+                .disabled(photoCulling.isPresented || shell.selection == .applePhotos || visibleCatalogAssets.isEmpty)
+                .help("进入快速筛选模式 (⇧⌘K)")
 
                 Button {
                     shell.toggleInspector()
                 } label: {
                     Label("显示检查器", systemImage: "sidebar.right")
                 }
+                .disabled(photoCulling.isPresented)
                 .help("显示或隐藏检查器 (⌥⌘I)")
 
                 Button {
@@ -123,7 +144,7 @@ struct AppShellView: View {
                 } label: {
                     Label("编辑", systemImage: "slider.horizontal.3")
                 }
-                .disabled(catalog.selectedAsset?.supportsEditing != true)
+                .disabled(photoCulling.isPresented || catalog.selectedAsset?.supportsEditing != true)
                 .help("编辑选中的 JPEG、HEIF 或 RAW 照片 (E)")
 
                 Menu {
@@ -156,6 +177,31 @@ struct AppShellView: View {
                         originalExporter.chooseDestinationAndStart(
                             assets: visibleCatalogAssets,
                             catalog: catalog
+                        )
+                    }
+                    .disabled(originalExporter.state.isActive || visibleCatalogAssets.isEmpty)
+
+                    Button("导出 Pick（保持目录结构）…") {
+                        exportOriginals(matching: .picks)
+                    }
+                    .disabled(
+                        originalExporter.state.isActive
+                            || catalog.assets(for: shell.selection, filter: .picks).isEmpty
+                    )
+
+                    Button("导出五星（保持目录结构）…") {
+                        exportOriginals(matching: .fiveStars)
+                    }
+                    .disabled(
+                        originalExporter.state.isActive
+                            || catalog.assets(for: shell.selection, filter: .fiveStars).isEmpty
+                    )
+
+                    Button("导出当前筛选并保持目录结构…") {
+                        originalExporter.chooseDestinationAndStart(
+                            assets: visibleCatalogAssets,
+                            catalog: catalog,
+                            preserveDirectoryStructure: true
                         )
                     }
                     .disabled(originalExporter.state.isActive || visibleCatalogAssets.isEmpty)
@@ -205,7 +251,11 @@ struct AppShellView: View {
                 } label: {
                     Label("批处理", systemImage: "square.on.square")
                 }
-                .disabled(shell.selection == .applePhotos || (catalog.selectedAssetIDs.isEmpty && visibleCatalogAssets.isEmpty))
+                .disabled(
+                    photoCulling.isPresented
+                        || shell.selection == .applePhotos
+                        || (catalog.selectedAssetIDs.isEmpty && visibleCatalogAssets.isEmpty)
+                )
             }
         }
     }
@@ -239,6 +289,23 @@ struct AppShellView: View {
                 in: visibleCatalogAssets.map { .catalog($0.id) }
             )
         }
+    }
+
+    private func presentPhotoCulling() {
+        guard shell.selection != .applePhotos, !visibleCatalogAssets.isEmpty else { return }
+        let focusedID = (catalog.selectionAnchorAsset ?? catalog.selectedAsset)?.id ?? visibleCatalogAssets[0].id
+        shell.dismissPhotoViewer(announce: false)
+        photoCulling.start(assets: visibleCatalogAssets, focusedAssetID: focusedID)
+        catalog.selectSingle(assetID: focusedID)
+        shell.announce("快速筛选模式：方向键切换，1–5 评分，P/X/U 标记，Esc 退出。")
+    }
+
+    private func exportOriginals(matching filter: LibraryFilter) {
+        originalExporter.chooseDestinationAndStart(
+            assets: catalog.assets(for: shell.selection, filter: filter),
+            catalog: catalog,
+            preserveDirectoryStructure: true
+        )
     }
 }
 
@@ -432,14 +499,20 @@ private struct LibraryPlaceholderView: View {
 }
 
 private struct PeopleLibraryView: View {
+    @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var people: PeopleStore
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 TextField("搜索人物名称", text: $people.searchText)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isSearchFocused)
+                    .onChange(of: isSearchFocused) { _, isFocused in
+                        shell.isTextInputActive = isFocused
+                    }
 
                 if isAnalyzing {
                     Button("取消分析") { people.cancelAnalysis() }
@@ -530,6 +603,7 @@ private struct PersonCard: View {
     @EnvironmentObject private var people: PeopleStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
     let person: PersonRecord
+    @FocusState private var isNameFieldFocused: Bool
 
     private var samples: [DetectedFace] { people.representativeFaces(for: person) }
     private var photoCount: Int { people.photoCount(for: person) }
@@ -570,6 +644,10 @@ private struct PersonCard: View {
                 set: { people.rename(personID: person.id, to: $0) }
             ))
             .textFieldStyle(.roundedBorder)
+            .focused($isNameFieldFocused)
+            .onChange(of: isNameFieldFocused) { _, isFocused in
+                shell.isTextInputActive = isFocused
+            }
 
             if person.displayName.isEmpty {
                 Text("输入姓名以便后续搜索与合并。")
@@ -691,8 +769,10 @@ private struct PersonFacePreview: View {
 }
 
 private struct SearchLibraryView: View {
+    @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var ocr: OCRIndexStore
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         let searchAssets = catalog.assets(for: .search)
@@ -703,6 +783,10 @@ private struct SearchLibraryView: View {
                     text: Binding(get: { catalog.searchQuery }, set: catalog.setSearchQuery)
                 )
                 .textFieldStyle(.roundedBorder)
+                .focused($isSearchFocused)
+                .onChange(of: isSearchFocused) { _, isFocused in
+                    shell.isTextInputActive = isFocused
+                }
 
                 Button(catalog.isInterpretingSearch ? "正在解释…" : "解释自然语言") {
                     Task { await catalog.interpretSearchWithFoundationModel() }
@@ -761,6 +845,7 @@ private struct ApplePhotosLibraryView: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     @EnvironmentObject private var importer: ApplePhotosImportCoordinator
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -835,6 +920,10 @@ private struct ApplePhotosLibraryView: View {
 
                 TextField("按文件名筛选", text: $applePhotos.searchText)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isSearchFocused)
+                    .onChange(of: isSearchFocused) { _, isFocused in
+                        shell.isTextInputActive = isFocused
+                    }
                     .frame(minWidth: 140, maxWidth: 220)
 
                 Spacer(minLength: 0)
@@ -2011,6 +2100,8 @@ private struct FolderSourceList: View {
 private struct InspectorView: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
+    private enum Field: Hashable { case colorLabel, comment }
+    @FocusState private var focusedField: Field?
 
     var body: some View {
         Form {
@@ -2045,11 +2136,13 @@ private struct InspectorView: View {
                         get: { asset.colorLabel },
                         set: { catalog.setColorLabel($0, for: [asset.id]) }
                     ))
+                    .focused($focusedField, equals: .colorLabel)
                     TextField("备注", text: Binding(
                         get: { asset.comment },
                         set: { catalog.setComment($0, for: [asset.id]) }
                     ), axis: .vertical)
                     .lineLimit(2...4)
+                    .focused($focusedField, equals: .comment)
                 }
             } else if !catalog.selectedAssetIDs.isEmpty {
                 Section("筛选") {
@@ -2064,6 +2157,9 @@ private struct InspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .onChange(of: focusedField) { _, newValue in
+            shell.isTextInputActive = newValue != nil
+        }
     }
 
     private var selectionSummary: String {
@@ -2175,16 +2271,6 @@ extension PhotoAsset {
         return [type, displayDimensions].joined(separator: " · ")
     }
 
-}
-
-private extension PhotoFlag {
-    var title: String {
-        switch self {
-        case .none: "无"
-        case .pick: "Pick"
-        case .reject: "Reject"
-        }
-    }
 }
 
 private extension String {
