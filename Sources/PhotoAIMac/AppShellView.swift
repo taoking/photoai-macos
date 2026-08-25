@@ -499,14 +499,20 @@ private struct LibraryPlaceholderView: View {
 }
 
 private struct PeopleLibraryView: View {
+    @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var people: PeopleStore
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 TextField("搜索人物名称", text: $people.searchText)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isSearchFocused)
+                    .onChange(of: isSearchFocused) { _, isFocused in
+                        shell.isTextInputActive = isFocused
+                    }
 
                 if isAnalyzing {
                     Button("取消分析") { people.cancelAnalysis() }
@@ -597,6 +603,7 @@ private struct PersonCard: View {
     @EnvironmentObject private var people: PeopleStore
     @EnvironmentObject private var thumbnails: ThumbnailStore
     let person: PersonRecord
+    @FocusState private var isNameFieldFocused: Bool
 
     private var samples: [DetectedFace] { people.representativeFaces(for: person) }
     private var photoCount: Int { people.photoCount(for: person) }
@@ -637,6 +644,10 @@ private struct PersonCard: View {
                 set: { people.rename(personID: person.id, to: $0) }
             ))
             .textFieldStyle(.roundedBorder)
+            .focused($isNameFieldFocused)
+            .onChange(of: isNameFieldFocused) { _, isFocused in
+                shell.isTextInputActive = isFocused
+            }
 
             if person.displayName.isEmpty {
                 Text("输入姓名以便后续搜索与合并。")
@@ -758,8 +769,10 @@ private struct PersonFacePreview: View {
 }
 
 private struct SearchLibraryView: View {
+    @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var ocr: OCRIndexStore
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         let searchAssets = catalog.assets(for: .search)
@@ -770,6 +783,10 @@ private struct SearchLibraryView: View {
                     text: Binding(get: { catalog.searchQuery }, set: catalog.setSearchQuery)
                 )
                 .textFieldStyle(.roundedBorder)
+                .focused($isSearchFocused)
+                .onChange(of: isSearchFocused) { _, isFocused in
+                    shell.isTextInputActive = isFocused
+                }
 
                 Button(catalog.isInterpretingSearch ? "正在解释…" : "解释自然语言") {
                     Task { await catalog.interpretSearchWithFoundationModel() }
@@ -828,6 +845,7 @@ private struct ApplePhotosLibraryView: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     @EnvironmentObject private var importer: ApplePhotosImportCoordinator
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -902,6 +920,10 @@ private struct ApplePhotosLibraryView: View {
 
                 TextField("按文件名筛选", text: $applePhotos.searchText)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isSearchFocused)
+                    .onChange(of: isSearchFocused) { _, isFocused in
+                        shell.isTextInputActive = isFocused
+                    }
                     .frame(minWidth: 140, maxWidth: 220)
 
                 Spacer(minLength: 0)
@@ -2078,6 +2100,8 @@ private struct FolderSourceList: View {
 private struct InspectorView: View {
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
+    private enum Field: Hashable { case colorLabel, comment }
+    @FocusState private var focusedField: Field?
 
     var body: some View {
         Form {
@@ -2112,11 +2136,13 @@ private struct InspectorView: View {
                         get: { asset.colorLabel },
                         set: { catalog.setColorLabel($0, for: [asset.id]) }
                     ))
+                    .focused($focusedField, equals: .colorLabel)
                     TextField("备注", text: Binding(
                         get: { asset.comment },
                         set: { catalog.setComment($0, for: [asset.id]) }
                     ), axis: .vertical)
                     .lineLimit(2...4)
+                    .focused($focusedField, equals: .comment)
                 }
             } else if !catalog.selectedAssetIDs.isEmpty {
                 Section("筛选") {
@@ -2131,6 +2157,9 @@ private struct InspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .onChange(of: focusedField) { _, newValue in
+            shell.isTextInputActive = newValue != nil
+        }
     }
 
     private var selectionSummary: String {

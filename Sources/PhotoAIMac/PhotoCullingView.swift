@@ -33,7 +33,6 @@ struct PhotoCullingView: View {
         .focusable()
         .focused($hasKeyboardFocus)
         .onAppear { hasKeyboardFocus = true }
-        .onExitCommand { exitCurrentMode() }
         .onKeyPress(.escape) {
             exitCurrentMode()
             return .handled

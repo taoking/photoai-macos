@@ -51,6 +51,7 @@ struct AppCommands: Commands {
                 togglePhotoViewer()
             }
             .keyboardShortcut(.space, modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button(photoCulling.isPresented ? "退出快速筛选" : "快速筛选模式") {
                 toggleCullingMode()
@@ -132,7 +133,7 @@ struct AppCommands: Commands {
                 shell.presentEditor()
             }
             .keyboardShortcut("e", modifiers: [])
-            .disabled(photoCulling.isPresented || catalog.selectedAsset?.supportsEditing != true)
+            .disabled(shell.isTextInputActive || photoCulling.isPresented || catalog.selectedAsset?.supportsEditing != true)
 
             Button("导入 .cube LUT…") {
                 luts.chooseAndImport()
@@ -193,11 +194,13 @@ struct AppCommands: Commands {
                 navigate(offset: -1)
             }
             .keyboardShortcut(.leftArrow, modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("下一张") {
                 navigate(offset: 1)
             }
             .keyboardShortcut(.rightArrow, modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Divider()
 
@@ -206,12 +209,14 @@ struct AppCommands: Commands {
                     applyCullingShortcut(.rating(rating))
                 }
                 .keyboardShortcut(KeyEquivalent(Character("\(rating)")), modifiers: [])
+                .disabled(shell.isTextInputActive)
             }
 
             Button("清除评分") {
                 applyCullingShortcut(.rating(0))
             }
             .keyboardShortcut("0", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Divider()
 
@@ -219,21 +224,25 @@ struct AppCommands: Commands {
                 applyCullingShortcut(.pick)
             }
             .keyboardShortcut("p", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("Reject") {
                 applyCullingShortcut(.reject)
             }
             .keyboardShortcut("x", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("取消标记") {
                 applyCullingShortcut(.clearFlag)
             }
             .keyboardShortcut("u", modifiers: [])
+            .disabled(shell.isTextInputActive)
 
             Button("切换收藏") {
                 catalog.toggleFavorite()
             }
             .keyboardShortcut("f", modifiers: [])
+            .disabled(shell.isTextInputActive)
         }
     }
 
