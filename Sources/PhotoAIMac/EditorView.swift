@@ -352,6 +352,8 @@ private struct FilmstripCell: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(asset.filename)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
         .onAppear {
             loadThumbnail(request)
         }

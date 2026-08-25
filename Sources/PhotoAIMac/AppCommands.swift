@@ -320,7 +320,7 @@ struct AppCommands: Commands {
         shell.dismissPhotoViewer(announce: false)
         photoCulling.start(assets: assets, focusedAssetID: focusedID)
         catalog.selectSingle(assetID: focusedID)
-        shell.announce("快速筛选模式：方向键切换，1–5 评分，P/X/U 标记，Esc 退出。")
+        shell.announce(KeyboardShortcutReference.cullingAnnouncement)
     }
 
     private func applyCullingShortcut(_ shortcut: PhotoCullingShortcut) {

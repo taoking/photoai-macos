@@ -84,6 +84,49 @@ struct AppShellModelTests {
     }
 
     @Test
+    @MainActor
+    func tracksTextInputFocusSoSingleKeyShortcutsStayDisabledWhileTyping() {
+        let shell = AppShellModel()
+        #expect(!shell.isTextInputActive)
+
+        shell.setTextInput(AppShellModel.TextInputField.globalSearch, active: true)
+        #expect(shell.isTextInputActive)
+
+        shell.setTextInput(AppShellModel.TextInputField.globalSearch, active: false)
+        #expect(!shell.isTextInputActive)
+    }
+
+    @Test
+    @MainActor
+    func keepsTextInputActiveWhenFocusMovesBetweenFieldsInEitherCallbackOrder() {
+        let shell = AppShellModel()
+        let personA = AppShellModel.TextInputField.personName(UUID())
+        let personB = AppShellModel.TextInputField.personName(UUID())
+
+        // 先“新框获焦”后“旧框失焦”：不能因为旧框的注销而误判为未在输入。
+        shell.setTextInput(personA, active: true)
+        shell.setTextInput(personB, active: true)
+        shell.setTextInput(personA, active: false)
+        #expect(shell.isTextInputActive)
+
+        shell.setTextInput(personB, active: false)
+        #expect(!shell.isTextInputActive)
+    }
+
+    @Test
+    @MainActor
+    func releasesTextInputStateWhenAFocusedFieldDisappears() {
+        let shell = AppShellModel()
+        shell.setTextInput(AppShellModel.TextInputField.inspectorMetadata, active: true)
+
+        // 检查器在聚焦状态下被隐藏时只会收到 onDisappear，没有第二次焦点回调。
+        shell.setTextInput(AppShellModel.TextInputField.inspectorMetadata, active: false)
+
+        #expect(!shell.isTextInputActive)
+        #expect(shell.activeTextInputs.isEmpty)
+    }
+
+    @Test
     func coversAllPlannedSidebarDestinations() {
         let titles = Set(SidebarDestination.allCases.map(\.title))
 

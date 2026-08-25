@@ -91,8 +91,21 @@ struct SettingsView: View {
                     LabeledContent(capability.name) {
                         Image(systemName: capability.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                             .foregroundStyle(capability.isAvailable ? .green : .orange)
+                            .accessibilityLabel(capability.isAvailable ? "可用" : "不可用")
                     }
                     .help(capability.detail)
+                }
+            }
+
+            Section("快捷键") {
+                ForEach(KeyboardShortcutReference.all) { shortcut in
+                    LabeledContent(shortcut.action) {
+                        Text(shortcut.keys)
+                            .font(.body.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(shortcut.spokenDescription)
                 }
             }
         }

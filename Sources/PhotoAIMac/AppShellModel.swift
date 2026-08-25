@@ -8,13 +8,44 @@ final class AppShellModel: ObservableObject {
     @Published private(set) var photoViewerItem: PhotoViewerItem? = nil
     @Published var gridDensity: GridDensity = .comfortable
     @Published private(set) var statusMessage = "准备就绪 — 原始照片始终保持不变。"
-    /// 任意文本输入框（搜索、重命名、颜色标签、备注等）当前是否处于聚焦编辑状态。
-    /// 无修饰键菜单快捷键（方向键、数字、P/X/U/E/F 等）在此期间会被禁用，
-    /// 避免 AppKit 的菜单键等效匹配抢在文本框之前吞掉按键。
-    @Published var isTextInputActive = false
+    /// 当前处于聚焦编辑状态的文本输入框标识集合（搜索、重命名、颜色标签、备注等）。
+    /// 使用集合而不是单个 Bool：焦点在两个输入框之间直接转移时，SwiftUI 不保证
+    /// “旧框失焦”与“新框获焦”两个回调的先后顺序，集合能保证最终状态始终正确。
+    @Published private(set) var activeTextInputs: Set<String> = []
     private var photoViewerContext: [PhotoViewerItem] = []
 
     var isPhotoViewerPresented: Bool { photoViewerItem != nil }
+
+    /// 任意文本输入框当前是否处于聚焦编辑状态。
+    /// 无修饰键菜单快捷键（空格、方向键、数字、P/X/U/E/F 等）在此期间会被禁用，
+    /// 避免 AppKit 的菜单键等效匹配抢在文本框之前吞掉按键。
+    var isTextInputActive: Bool { !activeTextInputs.isEmpty }
+
+    /// 文本输入框标识。集中定义避免各视图散落字符串字面量。
+    enum TextInputField {
+        static let peopleSearch = "people.search"
+        static let globalSearch = "library.search"
+        static let applePhotosFilter = "applePhotos.filter"
+        static let inspectorMetadata = "inspector.metadata"
+
+        static func personName(_ personID: UUID) -> String {
+            "people.name.\(personID.uuidString)"
+        }
+    }
+
+    /// 由各文本框的 `@FocusState` 变化与 `onDisappear` 调用。
+    /// `onDisappear` 必须同步注销：视图（人物卡片、检查器等）在聚焦状态下被销毁时
+    /// 不会再收到 `false` 的焦点回调，否则状态会永久停留在“输入中”，
+    /// 导致全部单键快捷键被持续禁用。
+    func setTextInput(_ identifier: String, active: Bool) {
+        if active {
+            guard !activeTextInputs.contains(identifier) else { return }
+            activeTextInputs.insert(identifier)
+        } else {
+            guard activeTextInputs.contains(identifier) else { return }
+            activeTextInputs.remove(identifier)
+        }
+    }
 
     func select(_ destination: SidebarDestination) {
         if isEditorPresented {

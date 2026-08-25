@@ -297,7 +297,7 @@ struct AppShellView: View {
         shell.dismissPhotoViewer(announce: false)
         photoCulling.start(assets: visibleCatalogAssets, focusedAssetID: focusedID)
         catalog.selectSingle(assetID: focusedID)
-        shell.announce("快速筛选模式：方向键切换，1–5 评分，P/X/U 标记，Esc 退出。")
+        shell.announce(KeyboardShortcutReference.cullingAnnouncement)
     }
 
     private func exportOriginals(matching filter: LibraryFilter) {
@@ -511,7 +511,10 @@ private struct PeopleLibraryView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($isSearchFocused)
                     .onChange(of: isSearchFocused) { _, isFocused in
-                        shell.isTextInputActive = isFocused
+                        shell.setTextInput(AppShellModel.TextInputField.peopleSearch, active: isFocused)
+                    }
+                    .onDisappear {
+                        shell.setTextInput(AppShellModel.TextInputField.peopleSearch, active: false)
                     }
 
                 if isAnalyzing {
@@ -646,7 +649,10 @@ private struct PersonCard: View {
             .textFieldStyle(.roundedBorder)
             .focused($isNameFieldFocused)
             .onChange(of: isNameFieldFocused) { _, isFocused in
-                shell.isTextInputActive = isFocused
+                shell.setTextInput(AppShellModel.TextInputField.personName(person.id), active: isFocused)
+            }
+            .onDisappear {
+                shell.setTextInput(AppShellModel.TextInputField.personName(person.id), active: false)
             }
 
             if person.displayName.isEmpty {
@@ -785,7 +791,10 @@ private struct SearchLibraryView: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isSearchFocused)
                 .onChange(of: isSearchFocused) { _, isFocused in
-                    shell.isTextInputActive = isFocused
+                    shell.setTextInput(AppShellModel.TextInputField.globalSearch, active: isFocused)
+                }
+                .onDisappear {
+                    shell.setTextInput(AppShellModel.TextInputField.globalSearch, active: false)
                 }
 
                 Button(catalog.isInterpretingSearch ? "正在解释…" : "解释自然语言") {
@@ -922,7 +931,10 @@ private struct ApplePhotosLibraryView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($isSearchFocused)
                     .onChange(of: isSearchFocused) { _, isFocused in
-                        shell.isTextInputActive = isFocused
+                        shell.setTextInput(AppShellModel.TextInputField.applePhotosFilter, active: isFocused)
+                    }
+                    .onDisappear {
+                        shell.setTextInput(AppShellModel.TextInputField.applePhotosFilter, active: false)
                     }
                     .frame(minWidth: 140, maxWidth: 220)
 
@@ -2158,7 +2170,10 @@ private struct InspectorView: View {
         }
         .formStyle(.grouped)
         .onChange(of: focusedField) { _, newValue in
-            shell.isTextInputActive = newValue != nil
+            shell.setTextInput(AppShellModel.TextInputField.inspectorMetadata, active: newValue != nil)
+        }
+        .onDisappear {
+            shell.setTextInput(AppShellModel.TextInputField.inspectorMetadata, active: false)
         }
     }
 

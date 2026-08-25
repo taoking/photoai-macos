@@ -279,6 +279,9 @@ private final class PhotoKitResourceTransfer: @unchecked Sendable {
     private let lock = NSLock()
     private var requestID: PHAssetResourceDataRequestID = PHInvalidAssetResourceDataRequestID
     private var cancellationRequested = false
+    /// 写盘失败的真实原因。PhotoKit 的取消是异步的，若不记录，磁盘写满或权限不足
+    /// 只会以 `CancellationError` 的形式冒出来，被上层当成“用户取消”而不提示用户。
+    private var writeFailure: Error?
 
     static func write(
         resource: PHAssetResource,
@@ -319,16 +322,28 @@ private final class PhotoKitResourceTransfer: @unchecked Sendable {
                         do {
                             try handle.write(contentsOf: data)
                         } catch {
+                            self.recordWriteFailure(error)
                             self.cancel()
                         }
                     },
                     completionHandler: { error in
-                        do { try handle.close() } catch { }
+                        // close() 失败意味着缓冲区可能没有完全落盘，文件不完整；
+                        // 静默吞掉会把损坏的导入报告成功，因此在没有更具体错误时向上抛出。
+                        var closeFailure: Error?
+                        do {
+                            try handle.close()
+                        } catch {
+                            closeFailure = error
+                        }
                         self.clearRequestID()
-                        if let error {
+                        if let writeFailure = self.consumeWriteFailure() {
+                            continuation.resume(throwing: writeFailure)
+                        } else if let error {
                             continuation.resume(throwing: error)
                         } else if Task.isCancelled {
                             continuation.resume(throwing: CancellationError())
+                        } else if let closeFailure {
+                            continuation.resume(throwing: closeFailure)
                         } else {
                             continuation.resume()
                         }
@@ -355,6 +370,23 @@ private final class PhotoKitResourceTransfer: @unchecked Sendable {
         lock.lock()
         requestID = PHInvalidAssetResourceDataRequestID
         lock.unlock()
+    }
+
+    /// 只保留第一个失败原因：后续的写失败通常是同一问题（磁盘满、卷被拔出）的连锁反应。
+    private func recordWriteFailure(_ error: Error) {
+        lock.lock()
+        if writeFailure == nil {
+            writeFailure = error
+        }
+        lock.unlock()
+    }
+
+    private func consumeWriteFailure() -> Error? {
+        lock.lock()
+        let failure = writeFailure
+        writeFailure = nil
+        lock.unlock()
+        return failure
     }
 
     private func cancel() {

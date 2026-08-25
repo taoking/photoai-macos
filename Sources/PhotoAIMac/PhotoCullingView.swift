@@ -100,11 +100,13 @@ struct PhotoCullingView: View {
                         Image(systemName: "minus.magnifyingglass")
                     }
                     .help("同步缩小 A/B")
+                    .accessibilityLabel("同步缩小 A/B 比较")
 
                     Button { session.setCompareZoom((session.compareState?.zoomScale ?? 1) * 1.25) } label: {
                         Image(systemName: "plus.magnifyingglass")
                     }
                     .help("同步放大 A/B")
+                    .accessibilityLabel("同步放大 A/B 比较")
 
                     Button { session.resetCompareTransform() } label: {
                         Label("重置缩放", systemImage: "arrow.counterclockwise")
@@ -296,10 +298,37 @@ struct PhotoCullingView: View {
                     }
                 }
             }
+
+            shortcutLegend
         }
         .font(.caption)
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
+    }
+
+    /// 常驻键位图例。核心快捷键此前只在进入筛选模式时播报一次，用户回想不起来时没有任何可查处。
+    private var shortcutLegend: some View {
+        HStack(spacing: 10) {
+            ForEach(KeyboardShortcutReference.cullingEssentials) { shortcut in
+                HStack(spacing: 4) {
+                    Text(shortcut.keys)
+                        .font(.caption.monospaced().weight(.semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                    Text(shortcut.action)
+                        .foregroundStyle(.secondary)
+                }
+                .fixedSize()
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(shortcut.spokenDescription)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("快捷键速查")
     }
 
     private var currentAsset: PhotoAsset? {
@@ -355,8 +384,12 @@ struct PhotoCullingView: View {
                 }
                 .buttonStyle(.plain)
                 .help("\(rating) 星（快捷键 \(rating)）")
+                .accessibilityLabel("设为 \(rating) 星")
+                .accessibilityAddTraits(rating <= asset.rating ? .isSelected : [])
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("星级评分")
     }
 
     private func flagButtons(for asset: PhotoAsset) -> some View {
@@ -364,12 +397,19 @@ struct PhotoCullingView: View {
             Button("P") { _ = session.perform(.pick, catalog: catalog) }
                 .tint(asset.flag == .pick ? .green : nil)
                 .help("Pick (P)")
+                .accessibilityLabel("标记为 Pick")
+                .accessibilityAddTraits(asset.flag == .pick ? .isSelected : [])
             Button("X") { _ = session.perform(.reject, catalog: catalog) }
                 .tint(asset.flag == .reject ? .red : nil)
                 .help("Reject (X)")
+                .accessibilityLabel("标记为 Reject")
+                .accessibilityAddTraits(asset.flag == .reject ? .isSelected : [])
             Button("U") { _ = session.perform(.clearFlag, catalog: catalog) }
                 .help("清除标记 (U)")
+                .accessibilityLabel("清除 Pick / Reject 标记")
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("照片标记")
     }
 
     private func exportButton(
