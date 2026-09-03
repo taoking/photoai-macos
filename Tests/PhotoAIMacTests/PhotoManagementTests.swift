@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct PhotoManagementTests {
     @Test
-    func ratingPersistence() throws {
+    func ratingPersistence() async throws {
         let fixture = try makeCatalogFixture(assetCount: 2)
         defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
 
@@ -16,6 +16,8 @@ struct PhotoManagementTests {
         store.setRating(5)
         store.setColorLabel("red", for: [assetID])
         store.setComment("旅行精选", for: [assetID])
+        // Catalog 写入已移出主线程，读回磁盘前必须先等待落盘。
+        await store.flushPendingPersist()
 
         let restored = CatalogStore(storageURL: fixture.catalogURL)
         let asset = try #require(restored.asset(withID: assetID))
@@ -30,13 +32,14 @@ struct PhotoManagementTests {
     }
 
     @Test
-    func flagPersistence() throws {
+    func flagPersistence() async throws {
         let fixture = try makeCatalogFixture(assetCount: 1)
         defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
 
         let store = CatalogStore(storageURL: fixture.catalogURL)
         let assetID = try #require(store.assets.first?.id)
         store.setFlag(.pick, for: [assetID])
+        await store.flushPendingPersist()
 
         let restored = CatalogStore(storageURL: fixture.catalogURL)
         #expect(restored.asset(withID: assetID)?.flag == .pick)

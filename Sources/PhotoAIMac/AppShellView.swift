@@ -383,6 +383,10 @@ private struct LibraryPlaceholderView: View {
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
 
+    private var unreachableSources: [PhotoSource] {
+        catalog.sources.filter { $0.status == .missing || $0.status == .inaccessible }
+    }
+
     var body: some View {
         // 保持同一次 render 中的本地 Catalog 结果一致，避免标题、空态判断和网格各自
         // 重新筛选/排序整套资产。
@@ -404,6 +408,34 @@ private struct LibraryPlaceholderView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
+
+            // 「缺失文件」页列出的资产按定义都打不开：不给出恢复入口，
+            // 用户只会看到一屏损坏占位图。
+            if shell.selection == .missingFiles, !unreachableSources.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(unreachableSources) { source in
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(source.displayName).fontWeight(.medium)
+                                Text(source.lastKnownPath)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.head)
+                            }
+                            Spacer()
+                            Button("重新定位…") {
+                                catalog.chooseAndRelocateFolder(for: source.id)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 14)
+            }
 
             if shell.selection == .applePhotos {
                 ApplePhotosLibraryView()
@@ -1095,17 +1127,19 @@ private struct ApplePhotosAssetCell: View {
         return CGSize(width: edge, height: edge)
     }
 
+    private func presentViewer() {
+        applePhotos.select(assetID: asset.id, modifiers: [])
+        shell.presentPhotoViewer(
+            item: .applePhotos(asset.id),
+            in: applePhotos.displayedAssets.map { .applePhotos($0.id) }
+        )
+    }
+
     var body: some View {
         let isSelected = applePhotos.selectedAssetIDs.contains(asset.id)
+        // 与本地网格一致：单击只选中，双击才进入大图预览。
         Button {
-            let modifiers = NSEvent.modifierFlags
-            applePhotos.select(assetID: asset.id, modifiers: modifiers)
-            if !modifiers.contains(.command), !modifiers.contains(.shift) {
-                shell.presentPhotoViewer(
-                    item: .applePhotos(asset.id),
-                    in: applePhotos.displayedAssets.map { .applePhotos($0.id) }
-                )
-            }
+            applePhotos.select(assetID: asset.id, modifiers: NSEvent.modifierFlags)
         } label: {
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 8).fill(.quaternary)
@@ -1135,6 +1169,15 @@ private struct ApplePhotosAssetCell: View {
             }
         }
         .buttonStyle(.plain)
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                presentViewer()
+            }
+        )
+        .contextMenu {
+            Button("大图预览") { presentViewer() }
+        }
+        .accessibilityAction(named: "大图预览") { presentViewer() }
         .task(id: "\(asset.id)-\(Int(targetSize.width))") {
             applePhotos.preheatThumbnail(for: asset.id, targetSize: targetSize)
             async let loadedThumbnail = applePhotos.thumbnail(for: asset.id, targetSize: targetSize)
@@ -1950,15 +1993,10 @@ private struct CatalogAssetCell: View {
         // 的可见 Cell 重新接入已有加载任务。
         let displayedThumbnail = thumbnailState.loadedImage ?? request.flatMap(thumbnails.image(for:))
 
+        // 单击只负责选中。此前无修饰键单击会直接打开大图预览，
+        // 于是"在网格里挑一张"这种最普通的操作也会掉进解码路径。
         Button {
-            let modifiers = NSEvent.modifierFlags
-            catalog.select(assetID: asset.id, in: orderedAssetIDs, modifiers: modifiers)
-            if !modifiers.contains(.command), !modifiers.contains(.shift) {
-                shell.presentPhotoViewer(
-                    item: .catalog(asset.id),
-                    in: orderedAssetIDs.map { .catalog($0) }
-                )
-            }
+            catalog.select(assetID: asset.id, in: orderedAssetIDs, modifiers: NSEvent.modifierFlags)
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 ZStack {
@@ -2019,6 +2057,16 @@ private struct CatalogAssetCell: View {
             }
         }
         .buttonStyle(.plain)
+        // 双击才进入大图预览；键盘用 Space，VoiceOver 与鼠标右键走右键菜单。
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                presentViewer()
+            }
+        )
+        .contextMenu {
+            Button("大图预览") { presentViewer() }
+        }
+        .accessibilityAction(named: "大图预览") { presentViewer() }
         .onAppear {
             loadThumbnail(request)
         }
@@ -2034,6 +2082,14 @@ private struct CatalogAssetCell: View {
         }
         .accessibilityLabel("\(asset.filename)，\(asset.metadataSummary)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func presentViewer() {
+        catalog.select(assetID: asset.id, in: orderedAssetIDs, modifiers: [])
+        shell.presentPhotoViewer(
+            item: .catalog(asset.id),
+            in: orderedAssetIDs.map { .catalog($0) }
+        )
     }
 
     private func loadThumbnail(_ request: ThumbnailRequest?) {
@@ -2088,7 +2144,16 @@ private struct FolderSourceList: View {
                         VStack(alignment: .trailing, spacing: 3) {
                             Text(source.status.title)
                             if source.status == .scanning {
-                                Text("正在后台扫描…")
+                                // 扫描一个大文件夹可能持续数分钟；必须显示真实的
+                                // 已扫描 / 总数，否则界面看起来像卡死。
+                                let progress = catalog.scanProgress[source.id]
+                                Text(progress?.description ?? "正在枚举文件…")
+                                    .monospacedDigit()
+                                if let progress, progress.total > 0 {
+                                    ProgressView(value: progress.fraction)
+                                        .progressViewStyle(.linear)
+                                        .frame(width: 120)
+                                }
                             } else {
                                 Text("\(source.assetCount) 张")
                             }
@@ -2096,10 +2161,19 @@ private struct FolderSourceList: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                        Button("重新扫描") {
-                            catalog.startRescan(source.id)
+                        if source.status == .missing || source.status == .inaccessible {
+                            // 外置盘换了盘符或素材搬了家时，这是唯一能让既有评分、
+                            // 标记与调整配方重新对上文件的入口。
+                            Button("重新定位…") {
+                                catalog.chooseAndRelocateFolder(for: source.id)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("重新扫描") {
+                                catalog.startRescan(source.id)
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
                     }
                     .padding(.vertical, 4)
                 }

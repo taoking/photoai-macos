@@ -263,6 +263,11 @@ struct CatalogSnapshot: Codable, Sendable {
             }
             schemaVersion = 3
         }
+        // `.scanning` 是运行时瞬时状态。扫描中途退出会把它写进快照，
+        // 下次启动就会看到一个永远停在"正在扫描"的来源。读取时一律归位。
+        for index in sources.indices where sources[index].status == .scanning {
+            sources[index].status = .ready
+        }
         if schemaVersion > CatalogSnapshot.currentSchemaVersion {
             // 前向版本保留字段能继续读取；当前 App 只维护自己已知的数据。
             schemaVersion = CatalogSnapshot.currentSchemaVersion

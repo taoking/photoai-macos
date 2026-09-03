@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct PhotoAIMacApp: App {
+    @NSApplicationDelegateAdaptor(PhotoAIAppDelegate.self) private var appDelegate
     @StateObject private var shell = AppShellModel()
     @StateObject private var catalog = CatalogStore()
     @StateObject private var thumbnails = ThumbnailStore()
@@ -29,6 +30,12 @@ struct PhotoAIMacApp: App {
     var body: some Scene {
         WindowGroup("PhotoAI Mac") {
             AppShellView()
+                .onAppear {
+                    // Catalog 写入是异步的：退出前必须让待写入的快照落盘。
+                    appDelegate.flushPendingWork = { [catalog] in
+                        await catalog.flushPendingPersist()
+                    }
+                }
                 .environmentObject(shell)
                 .environmentObject(catalog)
                 .environmentObject(thumbnails)

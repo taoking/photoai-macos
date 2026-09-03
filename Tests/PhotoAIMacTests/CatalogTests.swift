@@ -43,6 +43,7 @@ struct CatalogTests {
         #expect(firstStore.sources.count == 1)
         #expect(firstStore.assets.count == 1)
         #expect(firstStore.sources[0].status == .ready)
+        await firstStore.flushPendingPersist()
 
         let restoredStore = CatalogStore(storageURL: catalogURL)
         #expect(restoredStore.sources.count == 1)

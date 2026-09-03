@@ -5,7 +5,7 @@ import Foundation
 final class CatalogStore: ObservableObject {
     @Published private(set) var sources: [PhotoSource]
     @Published private(set) var assets: [PhotoAsset]
-    @Published private(set) var scanProgress: [UUID: Int] = [:]
+    @Published private(set) var scanProgress: [UUID: CatalogScanProgress] = [:]
     @Published private(set) var lastErrorMessage: String?
     @Published private(set) var selectedAssetIDs = Set<UUID>()
     @Published var filter: LibraryFilter = .all {
@@ -24,10 +24,15 @@ final class CatalogStore: ObservableObject {
     private(set) var queryComputationCount = 0
 
     private let persistence: CatalogPersistence
+    private let writer: CatalogWriter
     private var scanTasks: [UUID: Task<Void, Never>] = [:]
+    /// 待写入的最新快照。写入进行中时只替换它，不排队重复写整份 Catalog。
+    private var pendingSnapshot: CatalogSnapshot?
+    private var persistTask: Task<Void, Never>?
 
     init(storageURL: URL = CatalogPersistence.defaultFileURL) {
         persistence = CatalogPersistence(fileURL: storageURL)
+        writer = CatalogWriter(persistence: persistence)
 
         do {
             let snapshot = try persistence.load()
@@ -43,6 +48,7 @@ final class CatalogStore: ObservableObject {
 
     init(snapshot: CatalogSnapshot, storageURL: URL) {
         persistence = CatalogPersistence(fileURL: storageURL)
+        writer = CatalogWriter(persistence: persistence)
         sources = snapshot.sources
         assets = snapshot.assets
         rebuildAssetIndex()
@@ -98,6 +104,58 @@ final class CatalogStore: ObservableObject {
             sources.append(source)
             persist()
             await rescan(source.id)
+        } catch {
+            lastErrorMessage = "无法保存文件夹访问权限：\(error.localizedDescription)"
+        }
+    }
+
+    /// 为一个来源重新选择文件夹。
+    ///
+    /// 外置盘换盘符、素材整体搬家之后，来源会停在 `missing`，其下的资产既没有缩略图
+    /// 也打不开预览，而界面此前没有任何恢复入口。这里保留 `sourceID` 与 `relativePath`，
+    /// 因此重扫后资产 ID 稳定，评分、标记、调整配方与人脸关联都不会丢。
+    func chooseAndRelocateFolder(for sourceID: UUID) {
+        guard let source = sources.first(where: { $0.id == sourceID }) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "重新定位「\(source.displayName)」"
+        panel.message = "选择该来源现在所在的文件夹。原始文件不会被修改，评分与标记会保留。"
+        panel.prompt = "重新定位"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        startRelocating(sourceID, to: url)
+    }
+
+    func startRelocating(_ sourceID: UUID, to newRootURL: URL) {
+        Task { [weak self] in
+            await self?.relocate(sourceID, to: newRootURL)
+        }
+    }
+
+    func relocate(_ sourceID: UUID, to newRootURL: URL) async {
+        guard let index = sources.firstIndex(where: { $0.id == sourceID }) else { return }
+        let standardizedURL = newRootURL.standardizedFileURL
+
+        if let conflicting = sources.first(where: { $0.id != sourceID && $0.lastKnownPath == standardizedURL.path }) {
+            lastErrorMessage = "该文件夹已作为来源「\(conflicting.displayName)」存在。"
+            return
+        }
+
+        do {
+            let bookmarkData = try standardizedURL.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            sources[index].bookmarkData = bookmarkData
+            sources[index].lastKnownPath = standardizedURL.path
+            sources[index].displayName = standardizedURL.lastPathComponent
+            sources[index].status = .ready
+            lastErrorMessage = nil
+            persist()
+            await rescan(sourceID)
         } catch {
             lastErrorMessage = "无法保存文件夹访问权限：\(error.localizedDescription)"
         }
@@ -507,7 +565,7 @@ final class CatalogStore: ObservableObject {
         var source = sources[sourceIndex]
         source.status = .scanning
         sources[sourceIndex] = source
-        scanProgress[sourceID] = 0
+        scanProgress[sourceID] = CatalogScanProgress(scanned: 0, total: 0)
         lastErrorMessage = nil
 
         do {
@@ -524,15 +582,22 @@ final class CatalogStore: ObservableObject {
                 }
             }
 
-            let scannedAssets = try await withThrowingTaskGroup(of: [PhotoAsset].self) { group in
-                group.addTask {
-                    try CatalogScanner.scan(sourceID: sourceID, rootURL: rootURL)
-                }
-                guard let scannedAssets = try await group.next() else {
-                    throw CatalogScanError.unreadableFolder
-                }
-                group.cancelAll()
-                return scannedAssets
+            // 上一次的索引结果按 relativePath 交给扫描器：大小与修改时间都没变的文件
+            // 直接复用，跳过整次 EXIF 读取。重扫因此接近零成本。
+            let previouslyIndexed = Dictionary(
+                assets.lazy.filter { $0.sourceID == sourceID }.map { ($0.relativePath, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            // 首次导入时本来就没有可显示的内容，边扫边追加能让照片立刻出现；
+            // 重扫已有来源则等最终 merge，避免与既有条目重复。
+            let isInitialImport = previouslyIndexed.isEmpty
+
+            let scannedAssets = try await CatalogScanner.scanConcurrently(
+                sourceID: sourceID,
+                rootURL: rootURL,
+                reusableAssets: previouslyIndexed
+            ) { [weak self] batch in
+                await self?.applyScanBatch(batch, for: sourceID, isInitialImport: isInitialImport)
             }
             try Task.checkCancellation()
             merge(scannedAssets, for: sourceID)
@@ -551,6 +616,22 @@ final class CatalogStore: ObservableObject {
             setStatus(.inaccessible, for: sourceID)
             lastErrorMessage = "无法扫描 \(source.displayName)：\(error.localizedDescription)"
         }
+    }
+
+    /// 扫描进行中的一批结果：更新进度，并在首次导入时立即让照片出现在图库里。
+    ///
+    /// 批次按任务完成顺序到达，因此导入过程中的排列顺序不是最终顺序；
+    /// 扫描结束时的 `merge` 会做统一排序。
+    private func applyScanBatch(
+        _ batch: CatalogScanner.ScanBatch,
+        for sourceID: UUID,
+        isInitialImport: Bool
+    ) {
+        scanProgress[sourceID] = CatalogScanProgress(scanned: batch.scanned, total: batch.total)
+        guard isInitialImport, !batch.assets.isEmpty else { return }
+        assets.append(contentsOf: batch.assets)
+        rebuildAssetIndex()
+        invalidateQueryCache()
     }
 
     private func resolveURL(for source: PhotoSource) throws -> URL {
@@ -607,12 +688,42 @@ final class CatalogStore: ObservableObject {
         persist()
     }
 
+    /// 记录一次待写入的快照。
+    ///
+    /// 编码与写盘都交给 `CatalogWriter`，主线程只做一次 O(1) 的数组引用拷贝。
+    /// 写入进行中时后续的改动只替换 `pendingSnapshot`：连续按星级不会排出一串
+    /// 各写一遍整份 Catalog 的任务，最终落盘的始终是最新状态。
     private func persist() {
         invalidateQueryCache()
-        do {
-            try persistence.save(CatalogSnapshot(sources: sources, assets: assets))
-        } catch {
-            lastErrorMessage = "无法保存本地 Catalog：\(error.localizedDescription)"
+        pendingSnapshot = CatalogSnapshot(sources: sources, assets: assets)
+        guard persistTask == nil else { return }
+        persistTask = Task { [weak self] in
+            await self?.drainPendingSnapshots()
+        }
+    }
+
+    private func drainPendingSnapshots() async {
+        while let snapshot = pendingSnapshot {
+            pendingSnapshot = nil
+            do {
+                try await writer.write(snapshot)
+            } catch {
+                lastErrorMessage = "无法保存本地 Catalog：\(error.localizedDescription)"
+            }
+        }
+        persistTask = nil
+    }
+
+    /// 实际落盘次数。供测试断言连续改动被合并成一次写入。
+    var persistWriteCount: Int {
+        get async { await writer.writeCount }
+    }
+
+    /// 等待所有待写入的快照真正落盘。写入既然是异步的，
+    /// 任何"改完立刻从磁盘读回"的调用方（测试、退出流程）都必须先经过这里。
+    func flushPendingPersist() async {
+        while let task = persistTask {
+            await task.value
         }
     }
 
@@ -681,6 +792,23 @@ final class CatalogStore: ObservableObject {
         let duplicateIDs = Set(groups.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
         duplicateAssetIDsCache = duplicateIDs
         return duplicateIDs
+    }
+}
+
+/// 扫描进度。此前 `scanProgress` 只在开始时被设为 0、结束时清空，且界面从未读取它，
+/// 用户在长达 20–30 分钟的扫描里看不到任何数字变化。
+struct CatalogScanProgress: Equatable, Sendable {
+    let scanned: Int
+    let total: Int
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1, Double(scanned) / Double(total))
+    }
+
+    var description: String {
+        guard total > 0 else { return "正在枚举文件…" }
+        return "\(scanned) / \(total)"
     }
 }
 

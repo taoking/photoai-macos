@@ -115,6 +115,7 @@ struct PeopleStoreTests {
         #expect(rescannedAsset.id == originalAsset.id)
         #expect(people.faces.first?.assetID == rescannedAsset.id)
 
+        await catalog.flushPendingPersist()
         let restoredCatalog = CatalogStore(storageURL: catalogURL)
         let restoredPeople = PeopleStore(
             storageURL: peopleURL,
