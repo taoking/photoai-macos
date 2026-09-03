@@ -145,12 +145,7 @@ enum CullingAnalyzer {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             throw CullingError.unreadableImage
         }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 512
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        guard let image = DownsampledImageDecoder.image(from: source, maximumPixelSize: 512) else {
             throw CullingError.unreadableImage
         }
         let grayPixels = try grayscalePixels(for: image, width: 64, height: 64)

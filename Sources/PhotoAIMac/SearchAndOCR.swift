@@ -236,13 +236,7 @@ enum OCRTextRecognizer {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
                 throw OCRRecognizerError.unreadableSource
             }
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 2_000
-            ]
-            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            guard let image = DownsampledImageDecoder.image(from: source, maximumPixelSize: 2_000) else {
                 throw OCRRecognizerError.unreadableSource
             }
 

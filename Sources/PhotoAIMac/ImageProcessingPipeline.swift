@@ -215,14 +215,10 @@ enum ImageRenderer {
         }
 
         return try withImageSource(at: url) { source in
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: false,
-                kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize
-            ]
-            guard let previewImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            guard let previewImage = DownsampledImageDecoder.image(
+                from: source,
+                maximumPixelSize: maximumPixelSize
+            ) else {
                 throw ImageRenderError.unreadableSource
             }
             return CIImage(cgImage: previewImage)

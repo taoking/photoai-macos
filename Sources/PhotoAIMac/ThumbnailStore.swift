@@ -53,7 +53,16 @@ final class ThumbnailStore: ObservableObject {
     private let memoryCache = NSCache<NSString, NSImage>()
     /// 缩略图始终是可延后的界面增强项。使用 utility QoS，避免快速切换页面时
     /// 大量解码任务与主线程/交互事件争抢 CPU。
-    private let renderingQueue = DispatchQueue(label: "com.taoking.PhotoAIMac.thumbnail", qos: .utility)
+    ///
+    /// 并发有上限但不为 1：串行队列会让满屏 RAW 只能逐张解码；
+    /// 而不设上限则会在快速滚动时堆出大量并发解码，同样拖慢首屏。
+    private let renderingQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.taoking.PhotoAIMac.thumbnail"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = min(6, max(2, ProcessInfo.processInfo.activeProcessorCount))
+        return queue
+    }()
     private var inFlightKeys = Set<String>()
     private var callbacksByKey: [String: [UUID: (NSImage?) -> Void]] = [:]
     private(set) var completedKeys = Set<String>()
@@ -98,7 +107,7 @@ final class ThumbnailStore: ObservableObject {
         guard !inFlightKeys.contains(key) else { return token }
         inFlightKeys.insert(key)
 
-        renderingQueue.async { [weak self] in
+        renderingQueue.addOperation { [weak self] in
             let image = ThumbnailRenderer.render(request)
 
             DispatchQueue.main.async {
@@ -161,14 +170,7 @@ private enum ThumbnailRenderer {
         let fileURL = rootURL.appendingPathComponent(request.relativePath)
         guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
 
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: false,
-            kCGImageSourceThumbnailMaxPixelSize: 480
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        guard let image = DownsampledImageDecoder.image(from: source, maximumPixelSize: 480) else {
             return nil
         }
 

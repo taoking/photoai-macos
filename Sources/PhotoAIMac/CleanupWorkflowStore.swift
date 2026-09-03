@@ -330,13 +330,7 @@ enum CleanupAnalyzer {
 
     private static func perceptualHash(for url: URL) -> UInt64? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: false,
-            kCGImageSourceThumbnailMaxPixelSize: 32
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        guard let image = DownsampledImageDecoder.image(from: source, maximumPixelSize: 32) else { return nil }
 
         let width = 8
         let height = 8
