@@ -2,7 +2,77 @@
 
 本文件跟踪 `PhotoAI-Mac-PLAN.md` 的实际执行状态；产品范围与阶段验收标准以原计划为准。
 
-## 当前阶段：Phase 17 — 摄影照片筛选工作流
+## 当前阶段：预览空白与索引性能修复
+
+### 预览空白与索引性能修复（进行中）
+
+诊断报告与全部实测数据见 [docs/preview-and-indexing-performance.md](docs/preview-and-indexing-performance.md)。
+现场：Catalog 8,055 项（ARW 3,987 / JPG 4,068，平均 35.5 MB），唯一可用来源在安卓 MTP
+挂载盘（`aft-mtp-mount@macfuse0`，读文件前 1 MB 约 0.6 秒），另有 3 个来源已 `missing`。
+
+诊断结论（均为本机实测）：
+
+- 预览空白的决定性根因是 6 处 `kCGImageSourceCreateThumbnailFromImageAlways` 强制全图解码：
+  冷 ARW 缩略图 480 需 **30.04 s**、预览 2400 需 **36.09 s**；仅用内嵌预览分别是 0.441 s 与 0.350 s。
+- 但不能直接删除该 flag：JPEG 只内嵌 160×120 的 EXIF 缩略图，无论请求 480 还是 2400 都只返回它，
+  直接删除会让 4,068 张 JPG 全部变糊并使 OCR 失效。ARW 内嵌约 1616 px 预览，够用。
+- `PhotoPreviewStore` 把已解码完成的图像在写入缓存前因调用方取消而丢弃，且无 in-flight 去重，
+  导致左右翻页时每张都完整解码、每张都丢弃，永远收敛不到有图状态。
+- 索引缓慢的根因是扫描完全单线程、每个文件都读一次 EXIF（0.22–0.33 s/文件），
+  5,338 文件约需 20–30 分钟，且全程无进度、无增量提交、重扫无跳过。
+
+本轮修复（优先级 1+2，已完成代码与自动化验证）：
+
+- [x] 新增 `DownsampledImageDecoder`：内嵌长边达到请求值一半才采用，否则回退全解码；
+      已替换 `ThumbnailStore`、`PhotoPreviewStore`、`ImageProcessingPipeline`、`SearchAndOCR`、
+      `CullingWorkflowStore`、`CleanupWorkflowStore` 共 6 处调用，源码中已无散落的该 flag。
+- [x] `PhotoPreviewStore` 改为先写入内存/磁盘缓存再交由调用方处理取消，并按 `cacheKey` 去重；
+      新增 `decodeCount` 供测试断言实际解码次数。
+- [x] 新增 `Tests/PhotoAIMacTests/PreviewDecodingTests.swift`（6 项），覆盖尺寸判定回退、
+      取消后仍入缓存、并发去重；后两项已用"临时回滚为修复前语义"确认确实会失败。
+- [x] `swift build`、`swift test`（103 tests / 19 suites）、`Scripts/build-debug-app.sh`、
+      `git diff --check` 均 PASS；整套测试耗时从 28.10 s 降到 1.84 s。
+- [ ] 真机 UI 点击验证：调试包已就绪（`.build/PhotoAI-Mac.app`），待本机实际操作确认。
+
+实测效果（真实 MTP 冷文件，使用发布代码）：缩略图 480 冷 ARW 由 30.04 s 降到 **0.681 s**，
+预览 2400 冷 ARW 由 36.09 s 降到 **0.550 s**；JPEG 路径经同规格受控 A/B 确认无回归
+（1.658 s → 1.500 s，输出同为 320×480）。RAW 全屏预览尺寸由 2400 px 变为内嵌的 1616 px，
+观感是否可接受待真机判断。
+
+第二轮修复（优先级 3–5，已完成代码与自动化验证，详见报告第 5 节）：
+
+- [x] `CatalogScanner` 拆为"枚举路径 + 并行读元数据"，新增 `scanConcurrently` 按批回报进度。
+- [x] 新增 `EXIFDateParser` 替换每张照片新建的 `DateFormatter`，并有与旧实现逐输入等价的测试。
+- [x] `scanProgress` 改为已扫描 / 总数，并在 `FolderSourceList` 真正显示计数与进度条
+      （此前该属性从未被任何界面读取）；首次导入按批追加，照片边扫边出现。
+- [x] 重扫按 `fileSize` + `modifiedAt` 跳过未变文件，命中即复用旧记录。
+- [x] 新增 `CatalogWriter` actor：编码与写盘移出主线程，连续改动合并为一次写入，
+      `.bak` 解码校验改为每进程一次；新增 `flushPendingPersist()`，4 个既有测试已按新契约更新。
+- [x] `swift build`、`swift test`（109 tests / 21 suites）、`Scripts/build-debug-app.sh`、
+      `git diff --check` 均 PASS。
+- [ ] 真机完整导入验证（5,338 项，约 13 分钟）与导入过程中的网格观感确认。
+
+实测（48 个冷 ARW 一组）：串行读 EXIF 34.59 s → 并行 6.79 s，**加速 5.09×**；
+重扫快路径仅 stat，48 个文件 0.003 s。按 5,338 项外推：首次导入约 64 分钟降到约 13 分钟，
+重扫由约 64 分钟降到**约 1.2 秒**。连续 20 次评分改动实际只落盘 1 次。
+
+第三轮修复（剩余待办，已完成代码与自动化验证，详见报告第 6 节）：
+
+- [x] 网格单击只选中、双击才进预览，并补上右键菜单与 `accessibilityAction` 入口。
+- [x] 新增 `CatalogStore.relocate(_:to:)` 与两处"重新定位…"入口；
+      保留 `sourceID` 与 `relativePath`，重新定位后资产 ID、评分、标记均不丢。
+- [x] 预览磁盘缓存改 JPEG 编码 + 2 GB 预算淘汰，并清除旧 `.tiff` 残留。
+- [x] 缩略图队列由串行改为 `maxConcurrentOperationCount = min(6, 核数)`。
+- [x] 新增 `PhotoAIAppDelegate`，退出前经 `.terminateLater` 等待 `flushPendingPersist()`。
+- [x] 核实 Phase 14 归档数据在源码中零引用后移入废纸篓，实际回收约 **1.6 GB**
+      （sqlite 576 MB + ArchivePreviews 1.0 GB，可从废纸篓还原）。
+- [x] 顺带修复：`.scanning` 这一运行时瞬时状态会被扫描期持久化写进快照并跨重启存活，
+      导致来源永远停在"正在扫描"；读取时已统一归位为 `.ready`。
+- [x] `swift build`、`swift test`（117 tests / 24 suites）、`Scripts/build-debug-app.sh`、
+      `git diff --check` 均 PASS。
+- [ ] 真机验证：双击手感、重新定位真实 missing 来源、退出时的 `.terminateLater` 行为。
+
+## 历史阶段：Phase 17 — 摄影照片筛选工作流
 
 ### Phase 17 — 摄影照片筛选工作流（已完成）
 
