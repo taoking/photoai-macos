@@ -383,9 +383,6 @@ private struct LibraryPlaceholderView: View {
     @EnvironmentObject private var applePhotos: ApplePhotosStore
     @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
 
-    private var unreachableSources: [PhotoSource] {
-        catalog.sources.filter { $0.status == .missing || $0.status == .inaccessible }
-    }
 
     var body: some View {
         // 保持同一次 render 中的本地 Catalog 结果一致，避免标题、空态判断和网格各自
@@ -409,11 +406,12 @@ private struct LibraryPlaceholderView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
 
-            // 「缺失文件」页列出的资产按定义都打不开：不给出恢复入口，
-            // 用户只会看到一屏损坏占位图。
-            if shell.selection == .missingFiles, !unreachableSources.isEmpty {
+            // 图库按文件名全局排序，失效来源的资产会成片聚在一起，足以铺满
+            // 整个首屏。因此只要当前页可能列出它们，就必须给出恢复入口，
+            // 而不是只在「缺失文件」页才提示。
+            if shell.selection.group == .library, !catalog.unreachableSources.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(unreachableSources) { source in
+                    ForEach(catalog.unreachableSources) { source in
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
@@ -1992,6 +1990,7 @@ private struct CatalogAssetCell: View {
         // 图像误画成空白占位符。`thumbnailRefreshGeneration` 仍负责为缓存未命中
         // 的可见 Cell 重新接入已有加载任务。
         let displayedThumbnail = thumbnailState.loadedImage ?? request.flatMap(thumbnails.image(for:))
+        let isSourceReachable = catalog.isSourceReachable(for: asset)
 
         // 单击只负责选中。此前无修饰键单击会直接打开大图预览，
         // 于是"在网格里挑一张"这种最普通的操作也会掉进解码路径。
@@ -2012,6 +2011,15 @@ private struct CatalogAssetCell: View {
                         Image(systemName: asset.systemImage)
                             .font(.title2)
                             .foregroundStyle(.secondary)
+                    } else if !isSourceReachable {
+                        // 与解码失败区分：这张图不是坏了，是它所在的文件夹不在了。
+                        VStack(spacing: 4) {
+                            Image(systemName: "folder.badge.questionmark")
+                                .font(.title2)
+                            Text("文件夹缺失")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.orange)
                     } else if thumbnailState.isLoading {
                         ProgressView()
                             .controlSize(.small)
@@ -2095,7 +2103,9 @@ private struct CatalogAssetCell: View {
     private func loadThumbnail(_ request: ThumbnailRequest?) {
         thumbnails.cancel(thumbnailToken)
         thumbnailToken = nil
-        guard let request else {
+        // 来源已失效时不必再排队一次注定失败的解码，那只会占住渲染队列，
+        // 让真正可读的照片排在后面。
+        guard let request, catalog.isSourceReachable(for: asset) else {
             thumbnailState = .idle
             return
         }
@@ -2113,6 +2123,7 @@ private struct CatalogAssetCell: View {
 
 private struct FolderSourceList: View {
     @EnvironmentObject private var catalog: CatalogStore
+    @State private var sourcePendingRemoval: PhotoSource?
 
     var body: some View {
         Group {
@@ -2174,11 +2185,39 @@ private struct FolderSourceList: View {
                             }
                             .buttonStyle(.bordered)
                         }
+
+                        Button("移除…") {
+                            sourcePendingRemoval = source
+                        }
+                        .buttonStyle(.bordered)
+                        .help("从图库移除该来源的索引，不会删除任何原始文件")
                     }
                     .padding(.vertical, 4)
                 }
                 .listStyle(.inset)
             }
+        }
+        // 移除是不可撤销的：评分、标记与调整配方会随索引一起消失，
+        // 且重新添加同一文件夹也找不回来（资产会拿到新的 ID）。必须明确确认。
+        .confirmationDialog(
+            "移除来源「\(sourcePendingRemoval?.displayName ?? "")」？",
+            isPresented: Binding(
+                get: { sourcePendingRemoval != nil },
+                set: { if !$0 { sourcePendingRemoval = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: sourcePendingRemoval
+        ) { source in
+            Button("移除索引", role: .destructive) {
+                catalog.removeSource(source.id)
+                sourcePendingRemoval = nil
+            }
+            Button("取消", role: .cancel) { sourcePendingRemoval = nil }
+        } message: { source in
+            Text(
+                "将从图库移除 \(source.assetCount) 张照片的索引，"
+                + "包括它们的评分、标记与调整配方。原始文件不会被删除或修改。此操作无法撤销。"
+            )
         }
     }
 }

@@ -161,6 +161,28 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    /// 移除一个来源及其全部 Catalog 记录。
+    ///
+    /// 只删除本地索引，绝不触碰原始文件。评分、标记与调整配方会随记录一起消失，
+    /// 且无法通过重新添加同一文件夹找回（资产会拿到新的 ID），因此调用方必须
+    /// 先向用户明确确认。
+    func removeSource(_ sourceID: UUID) {
+        guard sources.contains(where: { $0.id == sourceID }) else { return }
+        scanTasks[sourceID]?.cancel()
+        scanTasks[sourceID] = nil
+        scanProgress[sourceID] = nil
+
+        let removedAssetIDs = Set(assets.lazy.filter { $0.sourceID == sourceID }.map(\.id))
+        sources.removeAll { $0.id == sourceID }
+        assets.removeAll { $0.sourceID == sourceID }
+        selectedAssetIDs.subtract(removedAssetIDs)
+        if let anchorID = selectionAnchorID, removedAssetIDs.contains(anchorID) {
+            selectionAnchorID = nil
+        }
+        rebuildAssetIndex()
+        persist()
+    }
+
     func startRescanAll() {
         for source in sources where scanTasks[source.id] == nil {
             scanTasks[source.id] = Task { [weak self] in
@@ -235,6 +257,20 @@ final class CatalogStore: ObservableObject {
             guard selectedAssetIDs.contains(id) else { return nil }
             return asset(withID: id)
         }
+    }
+
+    /// 该资产所属来源当前是否可读。
+    ///
+    /// 来源失效时它名下的资产仍然留在图库里（评分、标记都还在），但既没有缩略图
+    /// 也打不开预览。界面需要把这种"文件夹不在了"与"这张图解码失败"区分开，
+    /// 否则用户只会看到一片无法解释的破图标。
+    func isSourceReachable(for asset: PhotoAsset) -> Bool {
+        guard let source = sources.first(where: { $0.id == asset.sourceID }) else { return false }
+        return source.status != .missing && source.status != .inaccessible
+    }
+
+    var unreachableSources: [PhotoSource] {
+        sources.filter { $0.status == .missing || $0.status == .inaccessible }
     }
 
     func asset(withID assetID: UUID) -> PhotoAsset? {
@@ -676,7 +712,7 @@ final class CatalogStore: ObservableObject {
 
         assets.removeAll { $0.sourceID == sourceID }
         assets.append(contentsOf: merged)
-        assets.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        assets.sort(by: PhotoAsset.isOrderedBefore)
         rebuildAssetIndex()
         selectedAssetIDs.formIntersection(Set(assets.map(\.id)))
     }
