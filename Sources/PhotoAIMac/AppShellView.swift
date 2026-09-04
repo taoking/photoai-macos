@@ -348,9 +348,10 @@ struct AppShellView: View {
 private struct SidebarView: View {
     @Binding var selection: SidebarDestination
     @EnvironmentObject private var catalog: CatalogStore
-    /// 展开的年份。默认展开最新的一年，因为那是最常翻的。
+    /// 展开的年份与月份。默认展开最新的一年及其最新一个月，因为那是最常翻的。
     @State private var expandedYears: Set<Int> = []
-    @State private var hasExpandedLatestYear = false
+    @State private var expandedMonths: Set<Int> = []
+    @State private var hasExpandedLatestOnce = false
 
     var body: some View {
         List(selection: $selection) {
@@ -433,10 +434,23 @@ private struct SidebarView: View {
                                 title: month.bucket.title,
                                 count: month.count,
                                 bucket: month.bucket,
-                                systemImage: nil,
-                                indent: 20
+                                systemImage: expandedMonths.contains(month.id)
+                                    ? "chevron.down" : "chevron.right",
+                                indent: 16
                             ) {
-                                catalog.setDateBucket(month.bucket)
+                                toggle(month: month.id)
+                            }
+
+                            if expandedMonths.contains(month.id) {
+                                ForEach(month.days) { day in
+                                    dateRow(
+                                        title: day.bucket.title,
+                                        count: day.count,
+                                        bucket: day.bucket,
+                                        systemImage: nil,
+                                        indent: 38
+                                    ) {}
+                                }
                             }
                         }
                     }
@@ -508,11 +522,21 @@ private struct SidebarView: View {
         }
     }
 
+    private func toggle(month id: Int) {
+        if expandedMonths.contains(id) {
+            expandedMonths.remove(id)
+        } else {
+            expandedMonths.insert(id)
+        }
+    }
+
     private func expandLatestYearOnce() {
-        guard !hasExpandedLatestYear else { return }
-        hasExpandedLatestYear = true
-        if let latest = catalog.dateSections().sections.first?.year {
-            expandedYears.insert(latest)
+        guard !hasExpandedLatestOnce else { return }
+        hasExpandedLatestOnce = true
+        guard let latest = catalog.dateSections().sections.first else { return }
+        expandedYears.insert(latest.year)
+        if let latestMonth = latest.months.first {
+            expandedMonths.insert(latestMonth.id)
         }
     }
 }

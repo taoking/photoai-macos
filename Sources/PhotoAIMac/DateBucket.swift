@@ -10,6 +10,7 @@ import Foundation
 enum DateBucket: Hashable, Sendable {
     case year(Int)
     case month(year: Int, month: Int)
+    case day(year: Int, month: Int, day: Int)
     /// 没有拍摄时间的照片。单独成桶而不是悄悄排除，
     /// 否则用户按日期筛选时会觉得照片凭空少了几张。
     case undated
@@ -23,12 +24,14 @@ enum DateBucket: Hashable, Sendable {
 
     func matches(_ asset: PhotoAsset) -> Bool {
         guard let captureDate = asset.captureDate else { return self == .undated }
-        let components = Self.calendar.dateComponents([.year, .month], from: captureDate)
+        let components = Self.calendar.dateComponents([.year, .month, .day], from: captureDate)
         switch self {
         case let .year(year):
             return components.year == year
         case let .month(year, month):
             return components.year == year && components.month == month
+        case let .day(year, month, day):
+            return components.year == year && components.month == month && components.day == day
         case .undated:
             return false
         }
@@ -40,6 +43,8 @@ enum DateBucket: Hashable, Sendable {
             return "\(year) 年"
         case let .month(_, month):
             return "\(month) 月"
+        case let .day(_, _, day):
+            return "\(day) 日"
         case .undated:
             return "无拍摄时间"
         }
@@ -52,6 +57,8 @@ enum DateBucket: Hashable, Sendable {
             return "\(year) 年"
         case let .month(year, month):
             return "\(year) 年 \(month) 月"
+        case let .day(year, month, day):
+            return "\(year) 年 \(month) 月 \(day) 日"
         case .undated:
             return "无拍摄时间"
         }
@@ -72,17 +79,28 @@ struct DateMonth: Identifiable, Hashable, Sendable {
     let year: Int
     let month: Int
     let count: Int
+    let days: [DateDay]
 
     var id: Int { year * 100 + month }
     var bucket: DateBucket { .month(year: year, month: month) }
 }
 
+struct DateDay: Identifiable, Hashable, Sendable {
+    let year: Int
+    let month: Int
+    let day: Int
+    let count: Int
+
+    var id: Int { year * 10_000 + month * 100 + day }
+    var bucket: DateBucket { .day(year: year, month: month, day: day) }
+}
+
 enum DateSectionBuilder {
-    /// 按年、月归类并统计数量。年份与月份都按倒序排列，与图库默认的"新的在前"一致。
+    /// 按年、月、日归类并统计数量。三级都按倒序排列，与图库默认的"新的在前"一致。
     ///
-    /// 计数是提前算好的：侧边栏每一行都现算一次会把整个资产表扫很多遍。
+    /// 整棵树一次扫描算完：侧边栏每一行都现算一次会把整个资产表扫很多遍。
     static func sections(for assets: [PhotoAsset]) -> (sections: [DateSection], undatedCount: Int) {
-        var countsByMonth: [Int: [Int: Int]] = [:]
+        var countsByDay: [Int: [Int: [Int: Int]]] = [:]
         var undatedCount = 0
 
         for asset in assets {
@@ -90,21 +108,36 @@ enum DateSectionBuilder {
                 undatedCount += 1
                 continue
             }
-            let components = DateBucket.calendar.dateComponents([.year, .month], from: captureDate)
-            guard let year = components.year, let month = components.month else {
+            let components = DateBucket.calendar.dateComponents(
+                [.year, .month, .day],
+                from: captureDate
+            )
+            guard let year = components.year,
+                  let month = components.month,
+                  let day = components.day else {
                 undatedCount += 1
                 continue
             }
-            countsByMonth[year, default: [:]][month, default: 0] += 1
+            countsByDay[year, default: [:]][month, default: [:]][day, default: 0] += 1
         }
 
-        let sections = countsByMonth.map { year, months in
-            DateSection(
+        let sections = countsByDay.map { year, months in
+            let monthEntries = months.map { month, days in
+                DateMonth(
+                    year: year,
+                    month: month,
+                    count: days.values.reduce(0, +),
+                    days: days
+                        .map { DateDay(year: year, month: month, day: $0.key, count: $0.value) }
+                        .sorted { $0.day > $1.day }
+                )
+            }
+            .sorted { $0.month > $1.month }
+
+            return DateSection(
                 year: year,
-                count: months.values.reduce(0, +),
-                months: months
-                    .map { DateMonth(year: year, month: $0.key, count: $0.value) }
-                    .sorted { $0.month > $1.month }
+                count: monthEntries.reduce(0) { $0 + $1.count },
+                months: monthEntries
             )
         }
         .sorted { $0.year > $1.year }

@@ -4,13 +4,15 @@ import Testing
 
 struct DateBucketTests {
     @Test
-    func yearAndMonthBucketsMatchCaptureDate() {
+    func yearMonthAndDayBucketsMatchCaptureDate() {
         let asset = makeAsset(captureDate: date(2026, 7, 19))
 
         #expect(DateBucket.year(2026).matches(asset))
         #expect(DateBucket.month(year: 2026, month: 7).matches(asset))
+        #expect(DateBucket.day(year: 2026, month: 7, day: 19).matches(asset))
         #expect(!DateBucket.year(2025).matches(asset))
         #expect(!DateBucket.month(year: 2026, month: 6).matches(asset))
+        #expect(!DateBucket.day(year: 2026, month: 7, day: 20).matches(asset))
         #expect(!DateBucket.undated.matches(asset))
     }
 
@@ -23,11 +25,13 @@ struct DateBucketTests {
         #expect(DateBucket.undated.matches(asset))
         #expect(!DateBucket.year(2026).matches(asset))
         #expect(!DateBucket.month(year: 2026, month: 7).matches(asset))
+        #expect(!DateBucket.day(year: 2026, month: 7, day: 19).matches(asset))
     }
 
     @Test
-    func sectionsAreGroupedAndCountedNewestFirst() {
+    func sectionsAreGroupedByYearMonthAndDayNewestFirst() {
         let assets = [
+            makeAsset(captureDate: date(2026, 7, 19)),
             makeAsset(captureDate: date(2026, 7, 19)),
             makeAsset(captureDate: date(2026, 7, 20)),
             makeAsset(captureDate: date(2026, 6, 1)),
@@ -37,11 +41,21 @@ struct DateBucketTests {
 
         let grouped = DateSectionBuilder.sections(for: assets)
 
-        // 年份倒序，与图库默认的"新的在前"一致。
+        // 三级都倒序，与图库默认的"新的在前"一致。
         #expect(grouped.sections.map(\.year) == [2026, 2025])
-        #expect(grouped.sections[0].count == 3)
+        #expect(grouped.sections[0].count == 4)
         #expect(grouped.sections[0].months.map(\.month) == [7, 6])
-        #expect(grouped.sections[0].months[0].count == 2)
+
+        let july = grouped.sections[0].months[0]
+        #expect(july.count == 3)
+        #expect(july.days.map(\.day) == [20, 19])
+        #expect(july.days[0].count == 1)
+        #expect(july.days[1].count == 2)
+
+        // 各级计数必须自洽：月份等于其下各天之和，年份等于其下各月之和。
+        #expect(july.count == july.days.reduce(0) { $0 + $1.count })
+        #expect(grouped.sections[0].count == grouped.sections[0].months.reduce(0) { $0 + $1.count })
+
         #expect(grouped.sections[1].count == 1)
         #expect(grouped.undatedCount == 1)
     }
@@ -105,6 +119,37 @@ struct DateFilteringTests {
         #expect(store.assets(for: .allPhotos).count == 3)
     }
 
+    @Test
+    func dayBucketNarrowsToASingleDay() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Day-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = PhotoSource(
+            id: UUID(), bookmarkData: Data(), displayName: "卷",
+            lastKnownPath: directory.path, createdAt: .now, lastScannedAt: nil,
+            status: .ready, assetCount: 2
+        )
+        let store = CatalogStore(
+            snapshot: CatalogSnapshot(
+                sources: [source],
+                assets: [
+                    makeAsset(sourceID: source.id, name: "D19.JPG", month: 7, day: 19, rating: 0),
+                    makeAsset(sourceID: source.id, name: "D20.JPG", month: 7, day: 20, rating: 0)
+                ]
+            ),
+            storageURL: directory.appendingPathComponent("catalog.json"),
+            derivedImageCache: DerivedImageCache(rootURL: directory.appendingPathComponent("Derived"))
+        )
+
+        store.setDateBucket(.month(year: 2026, month: 7))
+        #expect(store.assets(for: .allPhotos).count == 2)
+
+        store.setDateBucket(.day(year: 2026, month: 7, day: 19))
+        #expect(store.assets(for: .allPhotos).map(\.filename) == ["D19.JPG"])
+    }
+
     /// 查询缓存必须把日期算进键里，否则切换月份会读到上一次的结果。
     @Test
     func switchingBucketsDoesNotReturnStaleCachedResults() async throws {
@@ -136,11 +181,19 @@ struct DateFilteringTests {
         #expect(store.assets(for: .allPhotos).map(\.filename) == ["B.JPG"])
     }
 
-    private func makeAsset(sourceID: UUID, name: String, month: Int, rating: Int) -> PhotoAsset {
+    private func makeAsset(
+        sourceID: UUID,
+        name: String,
+        month: Int,
+        day: Int = 1,
+        rating: Int
+    ) -> PhotoAsset {
         var asset = PhotoAsset(
             id: UUID(), sourceID: sourceID, relativePath: name, filename: name,
             fileExtension: "jpg", fileSize: 1, modifiedAt: nil,
-            captureDate: DateBucket.calendar.date(from: DateComponents(year: 2026, month: month, day: 1)),
+            captureDate: DateBucket.calendar.date(
+                from: DateComponents(year: 2026, month: month, day: day)
+            ),
             width: nil, height: nil, cameraMake: nil, cameraModel: nil, lens: nil,
             focalLength: nil, aperture: nil, shutterSpeed: nil, iso: nil,
             mediaType: .image, rawType: nil, rating: rating, flag: .none, isFavorite: false
