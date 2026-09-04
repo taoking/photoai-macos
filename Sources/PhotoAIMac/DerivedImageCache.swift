@@ -13,7 +13,7 @@ enum DerivedImageTier: String, CaseIterable, Sendable {
     var maximumPixelSize: Int {
         switch self {
         case .thumbnail: 480
-        case .preview: 1_600
+        case .preview: OfflinePreviewSetting.current.pixelSize
         }
     }
 
@@ -23,6 +23,54 @@ enum DerivedImageTier: String, CaseIterable, Sendable {
         case .preview: "previews"
         }
     }
+}
+
+/// 离线预览这一级的尺寸。它直接决定磁盘占用，所以交给用户选。
+///
+/// 每万张照片的实测占用（真实照片均值）：缩略图约 0.5 GB 固定，
+/// 离线预览 1280 约 2.6 GB、1600 约 3.7 GB、2400 约 5.6 GB。
+enum OfflinePreviewSetting: Int, CaseIterable, Identifiable, Sendable {
+    /// 只留缩略图。卷退出后仍能浏览网格，但点开单张只有放大的缩略图。
+    case disabled = 0
+    case compact = 1_280
+    /// 默认。Sony ARW 的内嵌预览本身就是 1616×1080，这一级对 RAW 是零损失。
+    case standard = 1_600
+    case large = 2_400
+
+    static let storageKey = "photoai.offlinePreviewPixelSize"
+
+    var id: Int { rawValue }
+
+    var pixelSize: Int { self == .disabled ? DerivedImageTier.thumbnail.maximumPixelSize : rawValue }
+
+    var title: String {
+        switch self {
+        case .disabled: "关闭（仅缩略图）"
+        case .compact: "1280 px"
+        case .standard: "1600 px（推荐）"
+        case .large: "2400 px"
+        }
+    }
+
+    var storageEstimate: String {
+        switch self {
+        case .disabled: "每万张约 0.5 GB"
+        case .compact: "每万张约 3.1 GB"
+        case .standard: "每万张约 4.2 GB"
+        case .large: "每万张约 6.1 GB"
+        }
+    }
+
+    /// 未设置时取默认值。读 `UserDefaults` 是线程安全的，因此不需要额外的全局可变状态。
+    static var current: OfflinePreviewSetting {
+        guard let stored = UserDefaults.standard.object(forKey: storageKey) as? Int,
+              let setting = OfflinePreviewSetting(rawValue: stored) else {
+            return .standard
+        }
+        return setting
+    }
+
+    static var isOfflinePreviewEnabled: Bool { current != .disabled }
 }
 
 /// 定位一张原始照片所需的最小信息。缩略图与离线预览共用同一个请求，

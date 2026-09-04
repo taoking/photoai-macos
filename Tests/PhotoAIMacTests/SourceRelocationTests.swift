@@ -219,3 +219,54 @@ struct ThumbnailVolumePolicyTests {
         #expect(store.isLocalVolume(rootPath: "/该路径不存在/\(UUID().uuidString)"))
     }
 }
+
+@MainActor
+struct VolumeRecoveryTests {
+    /// 外置盘接回来时应当自动恢复，而不是让用户自己想起来点"重新扫描"。
+    @Test
+    func remountedSourcesRecoverAndUntouchedOnesStayMissing() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Remount-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let comesBack = container.appendingPathComponent("接回来的卷", isDirectory: true)
+        let staysGone = container.appendingPathComponent("没接回来的卷", isDirectory: true)
+        for directory in [comesBack, staysGone] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data([0xFF, 0xD8, 0xFF]).write(to: directory.appendingPathComponent("photo.jpg"))
+        }
+
+        let store = CatalogStore(
+            storageURL: container.appendingPathComponent("catalog.json"),
+            derivedImageCache: DerivedImageCache(rootURL: container.appendingPathComponent("Derived"))
+        )
+        await store.addFolder(comesBack)
+        await store.addFolder(staysGone)
+        let comesBackID = try #require(
+            store.sources.first(where: { $0.lastKnownPath == comesBack.standardizedFileURL.path })?.id
+        )
+        let staysGoneID = try #require(
+            store.sources.first(where: { $0.lastKnownPath == staysGone.standardizedFileURL.path })?.id
+        )
+
+        // 两个卷都退出。
+        try FileManager.default.removeItem(at: comesBack)
+        try FileManager.default.removeItem(at: staysGone)
+        await store.rescan(comesBackID)
+        await store.rescan(staysGoneID)
+        #expect(store.sources.allSatisfy { $0.status == .missing })
+
+        // 只有一个卷被接了回来。
+        try FileManager.default.createDirectory(at: comesBack, withIntermediateDirectories: true)
+        try Data([0xFF, 0xD8, 0xFF]).write(to: comesBack.appendingPathComponent("photo.jpg"))
+        store.recoverSourcesAvailableAgain()
+
+        for _ in 0..<200 where store.sources.first(where: { $0.id == comesBackID })?.status != .ready {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(store.sources.first(where: { $0.id == comesBackID })?.status == .ready)
+        // 路径依旧不存在的那个必须原样保持 missing，等用户去"重新定位"。
+        #expect(store.sources.first(where: { $0.id == staysGoneID })?.status == .missing)
+    }
+}

@@ -96,6 +96,12 @@ struct AppShellView: View {
             guard wasPresented, !isPresented else { return }
             thumbnails.refreshVisibleSubscribers()
         }
+        // 外置盘接回来时自动恢复对应来源，不必让用户自己想起来点"重新扫描"。
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didMountNotification
+        )) { _ in
+            catalog.recoverSourcesAvailableAgain()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {

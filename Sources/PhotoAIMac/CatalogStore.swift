@@ -311,6 +311,21 @@ final class CatalogStore: ObservableObject {
         return asset(withID: selectionAnchorID)
     }
 
+    /// 外置盘重新接上时把受影响的来源恢复回来。
+    ///
+    /// 此前来源会一直停在 `missing`，要用户自己想起来点"重新扫描"。资产身份由
+    /// `sourceID + relativePath` 决定，路径没变时重扫即可原样对上，评分与标记都在。
+    /// 只处理路径确实又出现了的来源；换了盘符的仍然走"重新定位"。
+    func recoverSourcesAvailableAgain() {
+        let candidates = sources.filter { source in
+            (source.status == .missing || source.status == .inaccessible)
+                && FileManager.default.fileExists(atPath: source.lastKnownPath)
+        }
+        for source in candidates {
+            startRescan(source.id)
+        }
+    }
+
     /// 一个来源下全部资产的派生图请求，供整卷预热使用。
     func derivedImageRequests(for sourceID: UUID) -> [DerivedImageRequest] {
         assets.lazy.filter { $0.sourceID == sourceID }.compactMap(derivedImageRequest(for:))

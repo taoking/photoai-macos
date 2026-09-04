@@ -40,13 +40,23 @@ final class DerivedImagePrewarmStore: ObservableObject {
     @Published private(set) var lastErrorMessage: String?
 
     private let cache: DerivedImageCache
+    /// 要预热哪些级别。默认跟随用户设置；显式注入是为了让测试不必去改
+    /// `UserDefaults.standard`——那会污染真实偏好。
+    private let tiersProvider: @Sendable () -> Set<DerivedImageTier>
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var pausedSourceIDs: Set<UUID> = []
     /// 正在进行的交互请求数。大于零时预热让路。
     private var interactiveDemand = 0
 
-    init(cache: DerivedImageCache = DerivedImageCache()) {
+    init(
+        cache: DerivedImageCache = DerivedImageCache(),
+        tiers: (@Sendable () -> Set<DerivedImageTier>)? = nil
+    ) {
         self.cache = cache
+        // 用户关掉离线预览时只预热缩略图：那一级才是网格浏览的最低要求。
+        self.tiersProvider = tiers ?? {
+            OfflinePreviewSetting.isOfflinePreviewEnabled ? Set(DerivedImageTier.allCases) : [.thumbnail]
+        }
     }
 
     deinit {
@@ -105,7 +115,7 @@ final class DerivedImagePrewarmStore: ObservableObject {
         defer { tasks[sourceID] = nil }
 
         let cache = self.cache
-        let tiers = Set(DerivedImageTier.allCases)
+        let tiers = tiersProvider()
         // 已经齐全的直接算作完成，不必进队列——这就是续跑能力的来源。
         let pending = await Task.detached(priority: .utility) {
             requests.filter { request in

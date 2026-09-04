@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var luts: LUTStore
     @EnvironmentObject private var batch: BatchWorkflowStore
+    @AppStorage(OfflinePreviewSetting.storageKey) private var offlinePreviewSize = OfflinePreviewSetting.standard.rawValue
 
     var body: some View {
         Form {
@@ -25,6 +26,23 @@ struct SettingsView: View {
             Section("Catalog") {
                 LabeledContent("已添加来源", value: "\(catalog.sources.count) 个")
                 LabeledContent("已索引照片", value: "\(catalog.assets.count) 张")
+            }
+
+            Section("离线浏览") {
+                Picker("离线预览尺寸", selection: $offlinePreviewSize) {
+                    ForEach(OfflinePreviewSetting.allCases) { setting in
+                        Text(setting.title).tag(setting.rawValue)
+                    }
+                }
+                Text(
+                    (OfflinePreviewSetting(rawValue: offlinePreviewSize) ?? .standard).storageEstimate
+                    + "。外置盘退出后，图库靠这些本机副本继续显示照片；尺寸越大离线看得越清晰，占用也越多。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Text("改动只影响之后生成的部分，已有的离线副本不会被删除。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("LUT") {

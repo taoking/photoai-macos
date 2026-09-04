@@ -187,3 +187,77 @@ struct DerivedImagePrewarmTests {
         return url
     }
 }
+
+struct OfflinePreviewSettingTests {
+    /// 未设置时必须落在推荐档：1600 恰好对齐 Sony ARW 内嵌预览的 1616×1080，
+    /// 对 RAW 是零损失的一档。
+    @Test
+    func defaultsToTheRecommendedTier() {
+        #expect(OfflinePreviewSetting.standard.rawValue == 1_600)
+        #expect(OfflinePreviewSetting.standard.pixelSize == 1_600)
+        #expect(OfflinePreviewSetting.isOfflinePreviewEnabled || OfflinePreviewSetting.current == .disabled)
+    }
+
+    /// 关闭时不应该再按预览尺寸解码，否则"关掉"只省了磁盘不省时间。
+    @Test
+    func disabledFallsBackToThumbnailSize() {
+        #expect(OfflinePreviewSetting.disabled.pixelSize == DerivedImageTier.thumbnail.maximumPixelSize)
+    }
+
+    @Test
+    func everyTierAdvertisesItsStorageCost() {
+        // 占用直接决定用户选哪一档，每一档都必须给出数字。
+        for setting in OfflinePreviewSetting.allCases {
+            #expect(!setting.title.isEmpty)
+            #expect(setting.storageEstimate.contains("GB"))
+        }
+    }
+}
+
+@MainActor
+struct OfflinePreviewDisabledPrewarmTests {
+    /// 关闭离线预览后，预热只产出缩略图这一级。
+    @Test
+    func onlyThumbnailsArePrewarmedWhenOfflinePreviewIsDisabled() async throws {
+        let photos = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-NoPreview-\(UUID().uuidString)", isDirectory: true)
+        let cacheRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-NoPreviewCache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: photos)
+            try? FileManager.default.removeItem(at: cacheRoot)
+        }
+
+        let context = CGContext(
+            data: nil, width: 600, height: 400, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        let destination = CGImageDestinationCreateWithURL(
+            photos.appendingPathComponent("a.jpg") as CFURL, UTType.jpeg.identifier as CFString, 1, nil
+        )!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        _ = CGImageDestinationFinalize(destination)
+
+        let cache = DerivedImageCache(rootURL: cacheRoot)
+        let sourceID = UUID()
+        let request = DerivedImageRequest(
+            sourceID: sourceID,
+            assetID: UUID(),
+            bookmarkData: Data(),
+            lastKnownRootPath: photos.path,
+            relativePath: "a.jpg",
+            modificationDate: nil,
+            mediaType: .image
+        )
+        let store = DerivedImagePrewarmStore(cache: cache, tiers: { [.thumbnail] })
+        store.start(sourceID: sourceID, requests: [request])
+
+        for _ in 0..<200 where store.progress(for: sourceID)?.isFinished != true {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(cache.hasFreshEntry(for: request, tier: .thumbnail))
+        #expect(!cache.hasFreshEntry(for: request, tier: .preview))
+    }
+}
