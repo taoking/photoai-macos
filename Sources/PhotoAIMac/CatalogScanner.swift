@@ -151,11 +151,7 @@ enum CatalogScanner {
     }
 
     private static func sorted(_ assets: [PhotoAsset]) -> [PhotoAsset] {
-        assets.sorted {
-            let filenameOrder = $0.filename.localizedStandardCompare($1.filename)
-            if filenameOrder != .orderedSame { return filenameOrder == .orderedAscending }
-            return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
-        }
+        assets.sorted(by: PhotoAsset.isOrderedBefore)
     }
 
     private static func makeAsset(

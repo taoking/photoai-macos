@@ -276,6 +276,20 @@ struct CatalogSnapshot: Codable, Sendable {
 }
 
 extension PhotoAsset {
+    /// 图库与扫描结果的统一排序：文件名倒序（数字按自然序）。
+    ///
+    /// 导入的照片文件名与拍摄时间顺序一致（DSC06114 → DSC06115 → …），
+    /// 因此文件名倒序等价于"最新的排在最前"，符合导入后先看最近照片的习惯。
+    ///
+    /// 顺序只在这里定义一次：网格展示、Shift 范围选择、快速筛选会话导航
+    /// 和"导出当前结果"全都依赖同一个顺序，分散定义会让它们互相漂移。
+    /// 连拍分组与相似性规划各自有内部排序，不受此处影响。
+    static func isOrderedBefore(_ lhs: PhotoAsset, _ rhs: PhotoAsset) -> Bool {
+        let filenameOrder = lhs.filename.localizedStandardCompare(rhs.filename)
+        if filenameOrder != .orderedSame { return filenameOrder == .orderedDescending }
+        return lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedDescending
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, sourceID, relativePath, filename, fileExtension, fileSize, modifiedAt, captureDate
         case width, height, cameraMake, cameraModel, lens, focalLength, aperture, shutterSpeed, iso

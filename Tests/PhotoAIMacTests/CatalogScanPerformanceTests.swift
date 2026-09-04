@@ -215,3 +215,57 @@ struct TransientScanStateTests {
         #expect(restored.sources.first?.status == .ready)
     }
 }
+
+@MainActor
+struct LibraryOrderingTests {
+    /// 图库按文件名倒序：导入的照片文件名与拍摄时间顺序一致，
+    /// 倒序等价于最新的排在最前。这是产品决策，必须被钉住——
+    /// 此前全库按文件名升序，导致 `before_after_*` 这类旧素材霸占整个首屏，
+    /// 真实相机照片要滚过一千多项才出现。
+    @Test
+    func libraryIsOrderedByFilenameDescending() async throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        for name in ["DSC00001.JPG", "DSC00002.JPG", "DSC00010.JPG", "before_after_01.jpg"] {
+            try Data([0xFF, 0xD8, 0xFF]).write(to: rootURL.appendingPathComponent(name))
+        }
+
+        let store = CatalogStore(storageURL: rootURL.appendingPathComponent("catalog.json"))
+        await store.addFolder(rootURL)
+
+        // 数字按自然序倒排（10 在 2 之前），且旧素材沉到末尾而不是霸占首屏。
+        #expect(store.assets.map(\.filename) == [
+            "DSC00010.JPG",
+            "DSC00002.JPG",
+            "DSC00001.JPG",
+            "before_after_01.jpg"
+        ])
+    }
+
+    /// 扫描器与图库必须用同一个顺序，否则"导出当前结果"之类
+    /// 依赖顺序的功能会与用户所见不一致。
+    @Test
+    func scannerAndLibraryAgreeOnOrder() async throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        for index in 0..<12 {
+            try Data([0xFF, 0xD8, 0xFF]).write(
+                to: rootURL.appendingPathComponent(String(format: "DSC%05d.JPG", index))
+            )
+        }
+
+        let scanned = try CatalogScanner.scan(sourceID: UUID(), rootURL: rootURL)
+        let store = CatalogStore(storageURL: rootURL.appendingPathComponent("catalog.json"))
+        await store.addFolder(rootURL)
+
+        #expect(scanned.map(\.filename) == store.assets.map(\.filename))
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Order-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+}
