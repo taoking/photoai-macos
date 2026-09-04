@@ -42,7 +42,7 @@ final class PhotoPreviewStore: ObservableObject {
         self.diskCacheByteBudget = diskCacheByteBudget
         memoryCache.countLimit = 20
         memoryCache.totalCostLimit = 320 * 1_024 * 1_024
-        PhotoPreviewCacheMaintenance.scheduleCleanup(
+        ImageCacheMaintenance.scheduleCleanup(
             directoryURL: cacheDirectoryURL,
             byteBudget: diskCacheByteBudget
         )
@@ -101,13 +101,13 @@ final class PhotoPreviewStore: ObservableObject {
         let diskURL = cacheURL(for: request)
         let budget = diskCacheByteBudget
         Task.detached(priority: .utility) {
-            guard let data = PhotoPreviewCacheMaintenance.encode(image) else { return }
+            guard let data = ImageCacheMaintenance.encode(image) else { return }
             try? FileManager.default.createDirectory(
                 at: diskURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
             try? data.write(to: diskURL, options: .atomic)
-            PhotoPreviewCacheMaintenance.enforceBudget(
+            ImageCacheMaintenance.enforceBudget(
                 directoryURL: diskURL.deletingLastPathComponent(),
                 byteBudget: budget
             )
@@ -116,7 +116,7 @@ final class PhotoPreviewStore: ObservableObject {
 
     private func cacheURL(for request: PhotoPreviewRequest) -> URL {
         cacheDirectoryURL.appendingPathComponent(
-            "\(request.cacheKey).\(PhotoPreviewCacheMaintenance.fileExtension)",
+            "\(request.cacheKey).\(ImageCacheMaintenance.fileExtension)",
             isDirectory: false
         )
     }
@@ -177,8 +177,8 @@ private enum PhotoPreviewRenderer {
     }
 }
 
-/// 预览磁盘缓存的编码与容量维护。
-enum PhotoPreviewCacheMaintenance {
+/// 派生图像磁盘缓存的编码、读取与容量维护。缩略图与大图预览共用。
+enum ImageCacheMaintenance {
     /// 屏幕预览是可随时重建的派生数据，没有理由为它保留无损像素。
     /// JPEG 相比原先的未压缩 TIFF 通常小一个数量级以上。
     static let fileExtension = "jpg"
@@ -226,6 +226,20 @@ enum PhotoPreviewCacheMaintenance {
             try? FileManager.default.removeItem(at: file.url)
             totalBytes -= file.size
         }
+    }
+
+    static func loadImage(at url: URL) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return NSImage(contentsOf: url)
+    }
+
+    /// 写入一张派生图并把目录裁剪回预算以内。
+    static func write(_ image: NSImage, to url: URL, byteBudget: Int) {
+        guard let data = encode(image) else { return }
+        let directoryURL = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
+        enforceBudget(directoryURL: directoryURL, byteBudget: byteBudget)
     }
 
     /// 启动时做一次后台维护，让上一次运行遗留的超额缓存和旧格式文件被回收。

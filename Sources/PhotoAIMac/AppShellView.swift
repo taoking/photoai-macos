@@ -77,11 +77,23 @@ struct AppShellView: View {
             catalog.clearSelection()
             if shell.selection != .applePhotos { applePhotos.clearSelection() }
         }
+        // 不依赖 onAppear：在 macOS beta 上，覆盖层退出时 LazyVGrid 的既有 Cell
+        // 有时不会再收到生命周期事件。一次性唤醒可见订阅方即可从缓存或正在进行的
+        // 请求恢复缩略图，不会为每张完成的缩略图重算整张网格。
+        //
+        // 三个覆盖层（编辑器、大图预览、快速筛选）是同一种结构，必须一视同仁。
+        // 此前只有编辑器接了这个钩子，于是"点开一张仍在加载的照片看完再返回"
+        // 会留下一片空白的网格——正是同一个 bug 换了个入口。
         .onChange(of: shell.isEditorPresented) { wasPresented, isPresented in
             guard wasPresented, !isPresented else { return }
-            // 不依赖 onAppear：在 macOS beta 上，覆盖层退出时 LazyVGrid 的既有 Cell
-            // 有时不会再收到生命周期事件。一次性唤醒可见订阅方即可从内存缓存或
-            // 正在进行的请求恢复缩略图，不会为每张完成的缩略图重算整张网格。
+            thumbnails.refreshVisibleSubscribers()
+        }
+        .onChange(of: shell.isPhotoViewerPresented) { wasPresented, isPresented in
+            guard wasPresented, !isPresented else { return }
+            thumbnails.refreshVisibleSubscribers()
+        }
+        .onChange(of: photoCulling.isPresented) { wasPresented, isPresented in
+            guard wasPresented, !isPresented else { return }
             thumbnails.refreshVisibleSubscribers()
         }
         .toolbar {

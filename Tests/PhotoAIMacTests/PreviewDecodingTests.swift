@@ -135,7 +135,7 @@ struct PreviewDecodingTests {
         // 旧格式残留必须无条件清掉。
         try payload.write(to: directory.appendingPathComponent("legacy.tiff"))
 
-        PhotoPreviewCacheMaintenance.enforceBudget(directoryURL: directory, byteBudget: 250_000)
+        ImageCacheMaintenance.enforceBudget(directoryURL: directory, byteBudget: 250_000)
 
         let remaining = Set(
             try FileManager.default.contentsOfDirectory(atPath: directory.path)
@@ -152,7 +152,7 @@ struct PreviewDecodingTests {
         try Data(repeating: 0xAB, count: 1_000).write(to: directory.appendingPathComponent("a.jpg"))
         try Data(repeating: 0xAB, count: 1_000).write(to: directory.appendingPathComponent("b.jpg"))
 
-        PhotoPreviewCacheMaintenance.enforceBudget(directoryURL: directory, byteBudget: 10_000)
+        ImageCacheMaintenance.enforceBudget(directoryURL: directory, byteBudget: 10_000)
 
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 2)
     }
@@ -245,4 +245,106 @@ struct PreviewDecodingTests {
 private enum PreviewFixtureError: Error {
     case destinationUnavailable
     case writeFailed
+}
+
+@MainActor
+struct ThumbnailDiskCacheTests {
+    /// 缩略图此前只有内存缓存，进程一退，全部作废：重启后每张都要重新解码，
+    /// 在 MTP 这类慢速卷上是 0.75 秒/张。磁盘缓存必须跨实例存活。
+    @Test
+    func thumbnailsSurviveANewStoreInstance() async throws {
+        let directory = try makeDirectory("Source")
+        let cacheDirectory = try makeDirectory("Cache")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: cacheDirectory)
+        }
+
+        let fileURL = directory.appendingPathComponent("photo.jpg")
+        try writeJPEG(width: 800, height: 600, to: fileURL)
+        let request = ThumbnailRequest(
+            assetID: UUID(),
+            bookmarkData: Data(),
+            lastKnownRootPath: directory.path,
+            relativePath: "photo.jpg",
+            modificationDate: Date(timeIntervalSinceReferenceDate: 42),
+            mediaType: .image
+        )
+
+        let first = ThumbnailStore(cacheDirectoryURL: cacheDirectory)
+        _ = await loadThumbnail(from: first, request: request)
+        try await waitForFile(in: cacheDirectory)
+
+        // 原文件消失后，新实例仍必须拿得到缩略图——只能来自磁盘缓存。
+        try FileManager.default.removeItem(at: fileURL)
+        let second = ThumbnailStore(cacheDirectoryURL: cacheDirectory)
+        let restored = await loadThumbnail(from: second, request: request)
+
+        #expect(restored != nil)
+    }
+
+    @Test
+    func aMissingDiskEntryStillRendersFromTheOriginal() async throws {
+        let directory = try makeDirectory("Source")
+        let cacheDirectory = try makeDirectory("Cache")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: cacheDirectory)
+        }
+        try writeJPEG(width: 400, height: 300, to: directory.appendingPathComponent("photo.jpg"))
+
+        let store = ThumbnailStore(cacheDirectoryURL: cacheDirectory)
+        let image = await loadThumbnail(
+            from: store,
+            request: ThumbnailRequest(
+                assetID: UUID(),
+                bookmarkData: Data(),
+                lastKnownRootPath: directory.path,
+                relativePath: "photo.jpg",
+                modificationDate: nil,
+                mediaType: .image
+            )
+        )
+        #expect(image != nil)
+    }
+
+    private func loadThumbnail(from store: ThumbnailStore, request: ThumbnailRequest) async -> NSImage? {
+        await withCheckedContinuation { continuation in
+            var resumed = false
+            _ = store.load(request) { image in
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    private func waitForFile(in directory: URL) async throws {
+        for _ in 0..<100 {
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+            if !files.isEmpty { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        Issue.record("缩略图磁盘缓存没有在预期时间内写出文件")
+    }
+
+    private func makeDirectory(_ name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Thumb-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func writeJPEG(width: Int, height: Int, to url: URL) throws {
+        let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        let image = context.makeImage()!
+        let destination = CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.jpeg.identifier as CFString, 1, nil
+        )!
+        CGImageDestinationAddImage(destination, image, nil)
+        _ = CGImageDestinationFinalize(destination)
+    }
 }

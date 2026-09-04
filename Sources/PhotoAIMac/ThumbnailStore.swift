@@ -101,9 +101,39 @@ final class ThumbnailStore: ObservableObject {
     /// 自己的缩略图，或重新订阅仍在进行的加载；它不是每张缩略图完成时的全局广播。
     @Published private(set) var visibleSubscriberGeneration = 0
 
-    init() {
+    /// 缩略图的磁盘缓存目录。
+    ///
+    /// 此前 `ThumbnailStore` 只有内存缓存，进程一退出全部作废：重启后每一张
+    /// 缩略图都要重新从原文件解码。在 MTP 这类慢速卷上实测 0.75 秒/张，
+    /// 于是每次重启都要重新等上几分钟。大图预览一直有磁盘缓存，缩略图没有。
+    private let cacheDirectoryURL: URL
+    private let diskCacheByteBudget: Int
+
+    init(
+        cacheDirectoryURL: URL = ThumbnailStore.defaultCacheDirectoryURL,
+        diskCacheByteBudget: Int = 512 * 1_024 * 1_024
+    ) {
+        self.cacheDirectoryURL = cacheDirectoryURL
+        self.diskCacheByteBudget = diskCacheByteBudget
         memoryCache.countLimit = 600
         memoryCache.totalCostLimit = 160 * 1_024 * 1_024
+        ImageCacheMaintenance.scheduleCleanup(
+            directoryURL: cacheDirectoryURL,
+            byteBudget: diskCacheByteBudget
+        )
+    }
+
+    static var defaultCacheDirectoryURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PhotoAI-Mac", isDirectory: true)
+            .appendingPathComponent("Thumbnails", isDirectory: true)
+    }
+
+    private func cacheURL(for request: ThumbnailRequest) -> URL {
+        cacheDirectoryURL.appendingPathComponent(
+            "\(request.cacheKey).\(ImageCacheMaintenance.fileExtension)",
+            isDirectory: false
+        )
     }
 
     func image(for request: ThumbnailRequest) -> NSImage? {
@@ -138,8 +168,16 @@ final class ThumbnailStore: ObservableObject {
         guard !inFlightKeys.contains(key) else { return token }
         inFlightKeys.insert(key)
 
+        // 磁盘缓存的读写都放在后台队列上。`image(for:)` 只查内存，
+        // 因为它会在 SwiftUI 的 body 求值期间被调用，绝不能碰文件系统。
+        let diskURL = cacheURL(for: request)
+        let budget = diskCacheByteBudget
         renderingQueue(for: request).addOperation { [weak self] in
-            let image = ThumbnailRenderer.render(request)
+            var image = ImageCacheMaintenance.loadImage(at: diskURL)
+            if image == nil, let rendered = ThumbnailRenderer.render(request) {
+                image = rendered
+                ImageCacheMaintenance.write(rendered, to: diskURL, byteBudget: budget)
+            }
 
             DispatchQueue.main.async {
                 guard let self else { return }
