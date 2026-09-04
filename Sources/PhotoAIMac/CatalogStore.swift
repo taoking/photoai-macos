@@ -11,6 +11,11 @@ final class CatalogStore: ObservableObject {
     @Published var filter: LibraryFilter = .all {
         didSet { invalidateQueryCache() }
     }
+    /// 时间维度筛选。与 `filter` 一样由 Store 持有并参与查询缓存键，
+    /// 因此所有 `assets(for:)` 的调用方都自动受它影响，不必逐个改签名。
+    @Published private(set) var dateBucket: DateBucket?
+    /// 图库排序。与筛选一样参与查询缓存键。
+    @Published private(set) var sortOrder: LibrarySortOrder = .captureDateDescending
     @Published private(set) var searchQuery = ""
     @Published private(set) var searchInterpretation = SearchInterpretation.empty
     @Published private(set) var isInterpretingSearch = false
@@ -19,6 +24,7 @@ final class CatalogStore: ObservableObject {
     private var selectionAnchorID: UUID?
     private var queryCache: [CatalogQueryKey: [PhotoAsset]] = [:]
     private var duplicateAssetIDsCache: Set<UUID>?
+    private var dateSectionsCache: (sections: [DateSection], undatedCount: Int)?
     private var assetIndexByID: [UUID: Int] = [:]
     private var metadataUndoStack: [CatalogMetadataUndoOperation] = []
     private(set) var queryComputationCount = 0
@@ -62,7 +68,7 @@ final class CatalogStore: ObservableObject {
         // 必须在这里重新排序，不能沿用存储里的顺序。排序规则会随版本变化，
         // 而磁盘上的记录是用写它时的旧规则排好的；若直接采用，新规则要等到
         // 下一次重扫才生效——这正是"改成倒序后重启仍看到升序"的原因。
-        assets = loaded.assets.sorted(by: PhotoAsset.isOrderedBefore)
+        assets = loaded.assets.sorted(by: LibrarySortOrder.captureDateDescending.isOrderedBefore)
         rebuildAssetIndex()
         if let failure {
             lastErrorMessage = "无法读取本地 Catalog：\(failure.localizedDescription)"
@@ -80,7 +86,7 @@ final class CatalogStore: ObservableObject {
         self.database = database
         self.databaseError = nil
         sources = snapshot.sources
-        assets = snapshot.assets.sorted(by: PhotoAsset.isOrderedBefore)
+        assets = snapshot.assets.sorted(by: LibrarySortOrder.captureDateDescending.isOrderedBefore)
         rebuildAssetIndex()
     }
 
@@ -240,14 +246,19 @@ final class CatalogStore: ObservableObject {
 
     func assets(for destination: SidebarDestination, filter requestedFilter: LibraryFilter? = nil) -> [PhotoAsset] {
         let selectedFilter = requestedFilter ?? filter
-        let cacheKey = CatalogQueryKey(destination: destination, filter: selectedFilter)
+        let cacheKey = CatalogQueryKey(
+            destination: destination,
+            filter: selectedFilter,
+            dateBucket: dateBucket,
+            sortOrder: sortOrder
+        )
         if let cachedAssets = queryCache[cacheKey] {
             return cachedAssets
         }
 
         let destinationAssets: [PhotoAsset]
         switch destination {
-        case .allPhotos, .recentImports, .folders, .albums, .people, .cleanup:
+        case .allPhotos, .recentImports, .folders, .people, .cleanup:
             destinationAssets = assets
         case .applePhotos:
             destinationAssets = []
@@ -265,7 +276,12 @@ final class CatalogStore: ObservableObject {
         }
 
         let duplicateAssetIDs = selectedFilter == .duplicates ? duplicateAssetIDs() : []
-        let filtered = destinationAssets.filter { selectedFilter.matches($0, duplicateAssetIDs: duplicateAssetIDs) }
+        let activeDateBucket = dateBucket
+        let filtered = destinationAssets.filter { asset in
+            guard selectedFilter.matches(asset, duplicateAssetIDs: duplicateAssetIDs) else { return false }
+            guard let activeDateBucket else { return true }
+            return activeDateBucket.matches(asset)
+        }
         let result: [PhotoAsset]
         if destination == .recentImports {
             result = filtered.sorted { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
@@ -427,6 +443,29 @@ final class CatalogStore: ObservableObject {
 
         selectedAssetIDs = [assetID]
         selectionAnchorID = assetID
+    }
+
+    /// 侧边栏「按日期」用的年月分组与计数。结果缓存，避免每次重绘都扫全表。
+    func dateSections() -> (sections: [DateSection], undatedCount: Int) {
+        if let dateSectionsCache { return dateSectionsCache }
+        let result = DateSectionBuilder.sections(for: assets)
+        dateSectionsCache = result
+        return result
+    }
+
+    func setSortOrder(_ order: LibrarySortOrder) {
+        guard sortOrder != order else { return }
+        sortOrder = order
+        assets.sort(by: order.isOrderedBefore)
+        rebuildAssetIndex()
+        invalidateQueryCache()
+    }
+
+    func setDateBucket(_ bucket: DateBucket?) {
+        guard dateBucket != bucket else { return }
+        dateBucket = bucket
+        invalidateQueryCache()
+        clearSelection()
     }
 
     func selectAdjacent(offset: Int, in orderedAssetIDs: [UUID]) {
@@ -627,6 +666,18 @@ final class CatalogStore: ObservableObject {
         setFlag(.pick, for: assetIDs)
     }
 
+    /// 记录一批资产已成功导出原文件。
+    func markExported(_ assetIDs: Set<UUID>, at date: Date = .now) {
+        guard !assetIDs.isEmpty else { return }
+        var changed = Set<UUID>()
+        for assetID in assetIDs {
+            guard let index = assetIndexByID[assetID], assets.indices.contains(index) else { continue }
+            assets[index].exportedAt = date
+            changed.insert(assetID)
+        }
+        persistAssets(changed)
+    }
+
     func updateOCRText(_ text: String, for assetID: UUID) {
         guard let index = assets.firstIndex(where: { $0.id == assetID }) else { return }
         assets[index].ocrText = text
@@ -779,7 +830,7 @@ final class CatalogStore: ObservableObject {
 
         assets.removeAll { $0.sourceID == sourceID }
         assets.append(contentsOf: merged)
-        assets.sort(by: PhotoAsset.isOrderedBefore)
+        assets.sort(by: sortOrder.isOrderedBefore)
         rebuildAssetIndex()
         selectedAssetIDs.formIntersection(Set(assets.map(\.id)))
     }
@@ -907,6 +958,7 @@ final class CatalogStore: ObservableObject {
     private func invalidateQueryCache() {
         queryCache.removeAll(keepingCapacity: true)
         duplicateAssetIDsCache = nil
+        dateSectionsCache = nil
     }
 
     private func duplicateAssetIDs() -> Set<UUID> {
@@ -946,6 +998,8 @@ struct CatalogScanProgress: Equatable, Sendable {
 private struct CatalogQueryKey: Hashable {
     let destination: SidebarDestination
     let filter: LibraryFilter
+    let dateBucket: DateBucket?
+    let sortOrder: LibrarySortOrder
 }
 
 private struct DuplicateIndexKey: Hashable {

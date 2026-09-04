@@ -139,7 +139,7 @@ final class CatalogDatabase: @unchecked Sendable {
         try inTransaction {
             let statement = try prepare("""
                 UPDATE assets SET rating = ?, flag = ?, color_label = ?, comment = ?,
-                    is_favorite = ?, edit_recipe = ?, ocr_text = ?
+                    is_favorite = ?, edit_recipe = ?, ocr_text = ?, exported_at = ?
                 WHERE id = ?;
                 """)
             defer { sqlite3_finalize(statement) }
@@ -152,7 +152,8 @@ final class CatalogDatabase: @unchecked Sendable {
                 sqlite3_bind_int64(statement, 5, asset.isFavorite ? 1 : 0)
                 Self.bind(statement, 6, Self.encodeRecipe(asset.editRecipe))
                 Self.bind(statement, 7, asset.ocrText)
-                Self.bind(statement, 8, asset.id.uuidString)
+                Self.bind(statement, 8, asset.exportedAt)
+                Self.bind(statement, 9, asset.id.uuidString)
                 try step(statement)
             }
         }
@@ -214,11 +215,14 @@ final class CatalogDatabase: @unchecked Sendable {
                 is_favorite INTEGER NOT NULL DEFAULT 0,
                 edit_recipe TEXT,
                 ocr_text TEXT,
+                exported_at REAL,
                 UNIQUE(source_id, relative_path)
             );
             """)
         // 资产身份是 source_id + relative_path，重扫时按它复用既有 ID。
         try execute("CREATE INDEX IF NOT EXISTS assets_by_source ON assets(source_id);")
+        // 老库补列。SQLite 没有 IF NOT EXISTS，重复执行会报错，忽略即可。
+        try? execute("ALTER TABLE assets ADD COLUMN exported_at REAL;")
         try execute("PRAGMA user_version = \(Self.currentUserVersion);")
     }
 
@@ -266,8 +270,9 @@ final class CatalogDatabase: @unchecked Sendable {
                 id, source_id, relative_path, filename, file_extension, file_size,
                 modified_at, capture_date, width, height, camera_make, camera_model,
                 lens, focal_length, aperture, shutter_speed, iso, media_type, raw_type,
-                rating, flag, color_label, comment, is_favorite, edit_recipe, ocr_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                rating, flag, color_label, comment, is_favorite, edit_recipe, ocr_text,
+                exported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 source_id = excluded.source_id, relative_path = excluded.relative_path,
                 filename = excluded.filename, file_extension = excluded.file_extension,
@@ -279,7 +284,8 @@ final class CatalogDatabase: @unchecked Sendable {
                 iso = excluded.iso, media_type = excluded.media_type, raw_type = excluded.raw_type,
                 rating = excluded.rating, flag = excluded.flag, color_label = excluded.color_label,
                 comment = excluded.comment, is_favorite = excluded.is_favorite,
-                edit_recipe = excluded.edit_recipe, ocr_text = excluded.ocr_text;
+                edit_recipe = excluded.edit_recipe, ocr_text = excluded.ocr_text,
+                exported_at = excluded.exported_at;
             """)
         defer { sqlite3_finalize(statement) }
         Self.bind(statement, 1, asset.id.uuidString)
@@ -308,6 +314,7 @@ final class CatalogDatabase: @unchecked Sendable {
         sqlite3_bind_int64(statement, 24, asset.isFavorite ? 1 : 0)
         Self.bind(statement, 25, Self.encodeRecipe(asset.editRecipe))
         Self.bind(statement, 26, asset.ocrText)
+        Self.bind(statement, 27, asset.exportedAt)
         try step(statement)
     }
 
@@ -370,7 +377,8 @@ private extension CatalogDatabase {
         SELECT id, source_id, relative_path, filename, file_extension, file_size,
                modified_at, capture_date, width, height, camera_make, camera_model,
                lens, focal_length, aperture, shutter_speed, iso, media_type, raw_type,
-               rating, flag, color_label, comment, is_favorite, edit_recipe, ocr_text
+               rating, flag, color_label, comment, is_favorite, edit_recipe, ocr_text,
+               exported_at
         FROM assets;
         """
 
@@ -475,6 +483,7 @@ private extension CatalogDatabase {
         asset.comment = text(statement, 22) ?? ""
         asset.editRecipe = decodeRecipe(text(statement, 24))
         asset.ocrText = text(statement, 25)
+        asset.exportedAt = date(statement, 26)
         return asset
     }
 }

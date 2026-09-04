@@ -44,6 +44,10 @@ struct PhotoAIMacApp: App {
                     catalog.onSourceScanCompleted = { [prewarm] sourceID, requests in
                         prewarm.start(sourceID: sourceID, requests: requests)
                     }
+                    // 导出成功的资产要在 Catalog 里留下标记，选片才有闭环。
+                    originalPhotoExporter.onAssetsExported = { [catalog] assetIDs in
+                        catalog.markExported(assetIDs)
+                    }
                 }
                 .environmentObject(shell)
                 .environmentObject(catalog)

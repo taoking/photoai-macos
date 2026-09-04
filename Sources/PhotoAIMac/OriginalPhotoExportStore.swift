@@ -132,6 +132,11 @@ final class OriginalPhotoExportStore: ObservableObject {
     @Published private(set) var currentFilename: String?
     @Published private(set) var failures: [OriginalPhotoExportFailure] = []
     @Published private(set) var destinationURL: URL?
+    /// 本次导出中已成功复制的资产。导出结束后交给 Catalog 记为已导出。
+    private(set) var exportedAssetIDs: Set<UUID> = []
+    /// 由 App 接线：成功导出的资产要在 Catalog 里留下标记，
+    /// 否则"选一批 → 导出 → 下次再选"这个循环里分不清哪些处理过了。
+    var onAssetsExported: ((Set<UUID>) -> Void)?
 
     private var exportTask: Task<Void, Never>?
 
@@ -216,6 +221,7 @@ final class OriginalPhotoExportStore: ObservableObject {
         succeededCount = 0
         currentFilename = nil
         failures = []
+        exportedAssetIDs = []
 
         exportTask = Task.detached(priority: .userInitiated) { [weak self] in
             var completedCount = 0
@@ -238,6 +244,7 @@ final class OriginalPhotoExportStore: ObservableObject {
                 do {
                     try Self.copy(plan)
                     succeededCount += 1
+                    await self?.recordExported(plan.request.assetID)
                 } catch {
                     failures.append(
                         OriginalPhotoExportFailure(
@@ -324,6 +331,10 @@ final class OriginalPhotoExportStore: ObservableObject {
         currentFilename = filename
     }
 
+    private func recordExported(_ assetID: UUID) {
+        exportedAssetIDs.insert(assetID)
+    }
+
     private func recordProgress(
         completedCount: Int,
         succeededCount: Int,
@@ -346,5 +357,9 @@ final class OriginalPhotoExportStore: ObservableObject {
         currentFilename = nil
         state = cancelled ? .cancelled : .completed
         exportTask = nil
+        // 取消也要记：已经复制完成的那些确实导出了。
+        if !exportedAssetIDs.isEmpty {
+            onAssetsExported?(exportedAssetIDs)
+        }
     }
 }

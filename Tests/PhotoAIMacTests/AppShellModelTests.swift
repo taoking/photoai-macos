@@ -130,6 +130,9 @@ struct AppShellModelTests {
     func coversAllPlannedSidebarDestinations() {
         let titles = Set(SidebarDestination.allCases.map(\.title))
 
-        #expect(titles.isSuperset(of: ["所有照片", "最近导入", "收藏", "RAW", "视频", "缺失文件", "文件夹", "相簿", "人物", "搜索", "清理"]))
+        // 「相簿」曾经存在但返回全部资产，与「所有照片」完全一样——
+        // 侧边栏放一个骗人的入口比没有更糟，已被有意移除。
+        #expect(!titles.contains("相簿"))
+        #expect(titles.isSuperset(of: ["所有照片", "最近导入", "收藏", "RAW", "视频", "缺失文件", "文件夹", "人物", "搜索", "清理"]))
     }
 }

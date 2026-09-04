@@ -132,6 +132,17 @@ struct AppShellView: View {
                 .pickerStyle(.menu)
                 .disabled(photoCulling.isPresented)
 
+                Picker("排序", selection: Binding(
+                    get: { catalog.sortOrder },
+                    set: { catalog.setSortOrder($0) }
+                )) {
+                    ForEach(LibrarySortOrder.allCases) { order in
+                        Text(order.title).tag(order)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(photoCulling.isPresented)
+
                 Picker("筛选", selection: $catalog.filter) {
                     ForEach(LibraryFilter.allCases) { filter in
                         Text(filter.title).tag(filter)
@@ -336,6 +347,10 @@ struct AppShellView: View {
 
 private struct SidebarView: View {
     @Binding var selection: SidebarDestination
+    @EnvironmentObject private var catalog: CatalogStore
+    /// 展开的年份。默认展开最新的一年，因为那是最常翻的。
+    @State private var expandedYears: Set<Int> = []
+    @State private var hasExpandedLatestYear = false
 
     var body: some View {
         List(selection: $selection) {
@@ -374,9 +389,131 @@ private struct SidebarView: View {
                     }
                 }
             }
+
+            dateSection
         }
         .navigationTitle("PhotoAI Mac")
         .listStyle(.sidebar)
+        .onAppear(perform: expandLatestYearOnce)
+    }
+
+    /// 「按日期」是筛选而不是目的地：它与当前所在的页面正交，
+    /// 因此不参与 List 的 selection，自己按 `catalog.dateBucket` 高亮。
+    @ViewBuilder
+    private var dateSection: some View {
+        let grouped = catalog.dateSections()
+        if !grouped.sections.isEmpty || grouped.undatedCount > 0 {
+            Section("按日期") {
+                if catalog.dateBucket != nil {
+                    Button {
+                        catalog.setDateBucket(nil)
+                    } label: {
+                        Label("全部日期", systemImage: "xmark.circle")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ForEach(grouped.sections) { section in
+                    dateRow(
+                        title: section.bucket.title,
+                        count: section.count,
+                        bucket: section.bucket,
+                        systemImage: expandedYears.contains(section.year)
+                            ? "chevron.down" : "chevron.right",
+                        indent: 0
+                    ) {
+                        toggle(year: section.year)
+                    }
+
+                    if expandedYears.contains(section.year) {
+                        ForEach(section.months) { month in
+                            dateRow(
+                                title: month.bucket.title,
+                                count: month.count,
+                                bucket: month.bucket,
+                                systemImage: nil,
+                                indent: 20
+                            ) {
+                                catalog.setDateBucket(month.bucket)
+                            }
+                        }
+                    }
+                }
+
+                if grouped.undatedCount > 0 {
+                    dateRow(
+                        title: DateBucket.undated.title,
+                        count: grouped.undatedCount,
+                        bucket: .undated,
+                        systemImage: nil,
+                        indent: 0
+                    ) {
+                        catalog.setDateBucket(.undated)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 年份行的箭头切换展开，行本身筛选该年份；月份行直接筛选。
+    private func dateRow(
+        title: String,
+        count: Int,
+        bucket: DateBucket,
+        systemImage: String?,
+        indent: CGFloat,
+        onDisclosure: @escaping () -> Void
+    ) -> some View {
+        let isSelected = catalog.dateBucket == bucket
+        return HStack(spacing: 6) {
+            if let systemImage {
+                Button(action: onDisclosure) {
+                    Image(systemName: systemImage)
+                        .font(.caption2)
+                        .frame(width: 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("展开或收起 \(title)")
+            }
+
+            Button {
+                catalog.setDateBucket(isSelected ? nil : bucket)
+            } label: {
+                HStack {
+                    Text(title)
+                    Spacer()
+                    Text("\(count)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .fontWeight(isSelected ? .semibold : .regular)
+            .foregroundStyle(isSelected ? Color.accentColor : .primary)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+        }
+        .padding(.leading, indent)
+    }
+
+    private func toggle(year: Int) {
+        if expandedYears.contains(year) {
+            expandedYears.remove(year)
+        } else {
+            expandedYears.insert(year)
+        }
+    }
+
+    private func expandLatestYearOnce() {
+        guard !hasExpandedLatestYear else { return }
+        hasExpandedLatestYear = true
+        if let latest = catalog.dateSections().sections.first?.year {
+            expandedYears.insert(latest)
+        }
     }
 }
 
@@ -423,6 +560,17 @@ private struct LibraryPlaceholderView: View {
                 }
 
                 Spacer()
+
+                if let bucket = catalog.dateBucket {
+                    Button {
+                        catalog.setDateBucket(nil)
+                    } label: {
+                        Label(bucket.fullTitle, systemImage: "calendar")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("清除日期筛选")
+                }
 
                 Text(countLabel(catalogAssets: catalogAssets))
                     .font(.callout)
@@ -2107,13 +2255,22 @@ private struct CatalogAssetCell: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    // 看得见但原文件不在：导出、编辑这些需要原文件的操作都不可用。
-                    if !isSourceReachable, displayedThumbnail != nil {
-                        Image(systemName: "bolt.horizontal.circle.fill")
-                            .foregroundStyle(.orange)
-                            .padding(7)
-                            .help("来源离线，正在显示本机缓存的预览")
+                    HStack(spacing: 4) {
+                        // 已导出：选片是"选一批 → 导出 → 下次再选"的循环，
+                        // 没有这个标记就分不清哪些处理过了。
+                        if asset.exportedAt != nil {
+                            Image(systemName: "tray.and.arrow.up.fill")
+                                .foregroundStyle(.blue)
+                                .help("已导出原文件")
+                        }
+                        // 看得见但原文件不在：导出、编辑这些需要原文件的操作都不可用。
+                        if !isSourceReachable, displayedThumbnail != nil {
+                            Image(systemName: "bolt.horizontal.circle.fill")
+                                .foregroundStyle(.orange)
+                                .help("来源离线，正在显示本机缓存的预览")
+                        }
                     }
+                    .padding(7)
                 }
 
                 Text(asset.filename)

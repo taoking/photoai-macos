@@ -8,7 +8,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case videos
     case missingFiles
     case folders
-    case albums
     case applePhotos
     case people
     case search
@@ -25,7 +24,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .videos: "视频"
         case .missingFiles: "缺失文件"
         case .folders: "文件夹"
-        case .albums: "相簿"
         case .applePhotos: "Apple Photos"
         case .people: "人物"
         case .search: "搜索"
@@ -42,7 +40,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .videos: "video"
         case .missingFiles: "exclamationmark.triangle"
         case .folders: "folder"
-        case .albums: "rectangle.stack"
         case .applePhotos: "photo.stack"
         case .people: "person.2"
         case .search: "magnifyingglass"
@@ -54,7 +51,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .allPhotos, .recentImports, .favorites, .raw, .videos, .missingFiles:
             .library
-        case .folders, .albums, .applePhotos:
+        case .folders, .applePhotos:
             .collections
         case .people, .search, .cleanup:
             .tools

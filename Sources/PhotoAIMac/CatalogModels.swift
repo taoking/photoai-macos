@@ -57,6 +57,11 @@ struct PhotoAsset: Codable, Hashable, Identifiable, Sendable {
     var editRecipe: EditRecipe? = nil
     /// `nil` means the asset has not been indexed for OCR yet; an empty string is an indexed image with no recognized text.
     var ocrText: String? = nil
+    /// 最近一次成功导出原文件的时间。
+    ///
+    /// 选片的实际形态是"选一批 → 导出 → 下次再选"，没有这个标记就分不清哪些
+    /// 已经处理过。只在原文件复制成功后写入。
+    var exportedAt: Date? = nil
 
     var displayDimensions: String {
         guard let width, let height else { return "—" }
@@ -182,6 +187,8 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     case raw
     case videos
     case duplicates
+    case notExported
+    case exported
 
     var id: String { rawValue }
 
@@ -196,6 +203,8 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
         case .raw: "RAW"
         case .videos: "视频"
         case .duplicates: "重复照片"
+        case .notExported: "未导出"
+        case .exported: "已导出"
         }
     }
 
@@ -210,6 +219,8 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
         case .raw: asset.isRAW
         case .videos: asset.mediaType == .video
         case .duplicates: duplicateAssetIDs.contains(asset.id)
+        case .notExported: asset.exportedAt == nil
+        case .exported: asset.exportedAt != nil
         }
     }
 }
@@ -275,8 +286,46 @@ struct CatalogSnapshot: Codable, Sendable {
     }
 }
 
+/// 图库排序方式。
+///
+/// 单相机单卡时文件名≈拍摄顺序，但**多来源混合时按文件名排会把不同相机、
+/// 不同时期的照片交错**，因此拍摄时间是更可靠的默认。
+enum LibrarySortOrder: String, CaseIterable, Identifiable, Sendable {
+    case captureDateDescending
+    case filenameDescending
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .captureDateDescending: "拍摄时间（新→旧）"
+        case .filenameDescending: "文件名（Z→A）"
+        }
+    }
+
+    func isOrderedBefore(_ lhs: PhotoAsset, _ rhs: PhotoAsset) -> Bool {
+        switch self {
+        case .filenameDescending:
+            return PhotoAsset.isOrderedBefore(lhs, rhs)
+        case .captureDateDescending:
+            // 没有拍摄时间的排在最后，再按文件名保证顺序稳定。
+            switch (lhs.captureDate, rhs.captureDate) {
+            case let (left?, right?):
+                if left != right { return left > right }
+                return PhotoAsset.isOrderedBefore(lhs, rhs)
+            case (nil, _?):
+                return false
+            case (_?, nil):
+                return true
+            case (nil, nil):
+                return PhotoAsset.isOrderedBefore(lhs, rhs)
+            }
+        }
+    }
+}
+
 extension PhotoAsset {
-    /// 图库与扫描结果的统一排序：文件名倒序（数字按自然序）。
+    /// 扫描结果与文件名排序共用的比较器：文件名倒序（数字按自然序）。
     ///
     /// 导入的照片文件名与拍摄时间顺序一致（DSC06114 → DSC06115 → …），
     /// 因此文件名倒序等价于"最新的排在最前"，符合导入后先看最近照片的习惯。
@@ -294,6 +343,7 @@ extension PhotoAsset {
         case id, sourceID, relativePath, filename, fileExtension, fileSize, modifiedAt, captureDate
         case width, height, cameraMake, cameraModel, lens, focalLength, aperture, shutterSpeed, iso
         case mediaType, rawType, rating, flag, colorLabel, comment, isFavorite, editRecipe, ocrText
+        case exportedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -324,6 +374,7 @@ extension PhotoAsset {
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         editRecipe = try container.decodeIfPresent(EditRecipe.self, forKey: .editRecipe)
         ocrText = try container.decodeIfPresent(String.self, forKey: .ocrText)
+        exportedAt = try container.decodeIfPresent(Date.self, forKey: .exportedAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -354,6 +405,7 @@ extension PhotoAsset {
         try container.encode(isFavorite, forKey: .isFavorite)
         try container.encodeIfPresent(editRecipe, forKey: .editRecipe)
         try container.encodeIfPresent(ocrText, forKey: .ocrText)
+        try container.encodeIfPresent(exportedAt, forKey: .exportedAt)
     }
 }
 
