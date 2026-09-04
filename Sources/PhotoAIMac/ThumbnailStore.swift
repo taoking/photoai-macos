@@ -54,15 +54,46 @@ final class ThumbnailStore: ObservableObject {
     /// 缩略图始终是可延后的界面增强项。使用 utility QoS，避免快速切换页面时
     /// 大量解码任务与主线程/交互事件争抢 CPU。
     ///
-    /// 并发有上限但不为 1：串行队列会让满屏 RAW 只能逐张解码；
-    /// 而不设上限则会在快速滚动时堆出大量并发解码，同样拖慢首屏。
-    private let renderingQueue: OperationQueue = {
+    /// 并发度按卷自适应，因为它的收益在不同卷上符号相反：本机实测同一批 24 张
+    /// 照片，在 MTP/macFUSE 卷上串行 18.0 秒、6 路并发反而 22.4 秒；而本地卷
+    /// 上并发能明显缩短首屏填充。慢速卷因此走串行队列，本地卷走有界并发队列
+    /// （有上限是为了避免快速滚动时堆出大量并发解码）。
+    ///
+    /// 注意这条结论只适用于缩略图解码。扫描期的 EXIF 读取在同一块 MTP 卷上
+    /// 并发反而有 5.09 倍加速，那里保持并行。两者差别在于单次读取的数据量。
+    private let localVolumeQueue: OperationQueue = {
         let queue = OperationQueue()
-        queue.name = "com.taoking.PhotoAIMac.thumbnail"
+        queue.name = "com.taoking.PhotoAIMac.thumbnail.local"
         queue.qualityOfService = .utility
         queue.maxConcurrentOperationCount = min(6, max(2, ProcessInfo.processInfo.activeProcessorCount))
         return queue
     }()
+
+    private let slowVolumeQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.taoking.PhotoAIMac.thumbnail.slow"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
+
+    /// 按来源根路径缓存卷类型判定，避免每张缩略图都做一次系统调用。
+    private var volumeIsLocalByRootPath: [String: Bool] = [:]
+
+    /// 网络卷与 macFUSE（MTP、SMB 等）挂载的 `volumeIsLocal` 为 false；
+    /// 本地盘以及 U 盘、SD 卡都是 true，后者速度足够，应当并发。
+    func isLocalVolume(rootPath: String) -> Bool {
+        if let cached = volumeIsLocalByRootPath[rootPath] { return cached }
+        let values = try? URL(fileURLWithPath: rootPath).resourceValues(forKeys: [.volumeIsLocalKey])
+        // 读不到卷信息时按本地处理：一次探测失败不该让整个来源退化成串行。
+        let isLocal = values?.volumeIsLocal ?? true
+        volumeIsLocalByRootPath[rootPath] = isLocal
+        return isLocal
+    }
+
+    private func renderingQueue(for request: ThumbnailRequest) -> OperationQueue {
+        isLocalVolume(rootPath: request.lastKnownRootPath) ? localVolumeQueue : slowVolumeQueue
+    }
     private var inFlightKeys = Set<String>()
     private var callbacksByKey: [String: [UUID: (NSImage?) -> Void]] = [:]
     private(set) var completedKeys = Set<String>()
@@ -107,7 +138,7 @@ final class ThumbnailStore: ObservableObject {
         guard !inFlightKeys.contains(key) else { return token }
         inFlightKeys.insert(key)
 
-        renderingQueue.addOperation { [weak self] in
+        renderingQueue(for: request).addOperation { [weak self] in
             let image = ThumbnailRenderer.render(request)
 
             DispatchQueue.main.async {
