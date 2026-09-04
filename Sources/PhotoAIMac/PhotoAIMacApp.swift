@@ -8,6 +8,7 @@ struct PhotoAIMacApp: App {
     @StateObject private var catalog = CatalogStore()
     @StateObject private var thumbnails = ThumbnailStore()
     @StateObject private var photoPreviews = PhotoPreviewStore()
+    @StateObject private var prewarm = DerivedImagePrewarmStore()
     @StateObject private var editorPreview = EditorPreviewStore()
     @StateObject private var luts = LUTStore()
     @StateObject private var exporter = ExportCoordinator()
@@ -39,11 +40,16 @@ struct PhotoAIMacApp: App {
                     appDelegate.flushPendingWork = { [catalog] in
                         await catalog.flushPendingPersist()
                     }
+                    // 扫描完成后自动把整卷过一遍，这样退出卷后照片依然看得见。
+                    catalog.onSourceScanCompleted = { [prewarm] sourceID, requests in
+                        prewarm.start(sourceID: sourceID, requests: requests)
+                    }
                 }
                 .environmentObject(shell)
                 .environmentObject(catalog)
                 .environmentObject(thumbnails)
                 .environmentObject(photoPreviews)
+                .environmentObject(prewarm)
                 .environmentObject(editorPreview)
                 .environmentObject(luts)
                 .environmentObject(exporter)

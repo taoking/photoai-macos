@@ -492,7 +492,7 @@ private struct CullingPreviewPane: View {
                 return
             }
             isLoading = true
-            let loadedImage = await previews.image(for: request)
+            let loadedImage = await previews.image(for: request, allowsRendering: catalog.isSourceReachable(for: asset))
             guard !Task.isCancelled else { return }
             image = loadedImage
             isLoading = false

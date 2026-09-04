@@ -27,6 +27,9 @@ final class CatalogStore: ObservableObject {
     private let writer: CatalogWriter
     /// 派生图磁盘层。移除来源时要连同它的缓存目录一起清掉。
     let derivedImageCache: DerivedImageCache
+    /// 一个来源扫描完成后触发，用于把整卷排进派生图预热。
+    /// 由 App 在启动时接线，Store 本身不认识预热的实现。
+    var onSourceScanCompleted: ((UUID, [DerivedImageRequest]) -> Void)?
     private var scanTasks: [UUID: Task<Void, Never>] = [:]
     /// 待写入的最新快照。写入进行中时只替换它，不排队重复写整份 Catalog。
     private var pendingSnapshot: CatalogSnapshot?
@@ -306,6 +309,11 @@ final class CatalogStore: ObservableObject {
     var selectionAnchorAsset: PhotoAsset? {
         guard let selectionAnchorID else { return nil }
         return asset(withID: selectionAnchorID)
+    }
+
+    /// 一个来源下全部资产的派生图请求，供整卷预热使用。
+    func derivedImageRequests(for sourceID: UUID) -> [DerivedImageRequest] {
+        assets.lazy.filter { $0.sourceID == sourceID }.compactMap(derivedImageRequest(for:))
     }
 
     /// 缩略图与离线预览共用同一个请求：它们读的是同一个文件、走同一次解码。
@@ -655,6 +663,7 @@ final class CatalogStore: ObservableObject {
             sources[refreshedIndex].assetCount = scannedAssets.count
             scanProgress[sourceID] = nil
             persist()
+            onSourceScanCompleted?(sourceID, derivedImageRequests(for: sourceID))
         } catch is CancellationError {
             setStatus(.ready, for: sourceID)
         } catch CatalogStoreError.sourceMissing {

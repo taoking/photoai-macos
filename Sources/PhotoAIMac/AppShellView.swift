@@ -1487,9 +1487,14 @@ private struct PhotoViewerRatingControl: View {
 private struct LocalPhotoViewerMedia: View {
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var previews: PhotoPreviewStore
+    @EnvironmentObject private var thumbnails: ThumbnailStore
+    @EnvironmentObject private var prewarm: DerivedImagePrewarmStore
     let asset: PhotoAsset
     @State private var image: NSImage?
     @State private var isLoading = false
+    /// 当前显示的是否只是放大的缩略图。它先顶上来避免空白页，
+    /// 更清晰的一级到位后会被替换。
+    @State private var isShowingThumbnailFallback = false
 
     var body: some View {
         let request = catalog.derivedImageRequest(for: asset)
@@ -1508,9 +1513,13 @@ private struct LocalPhotoViewerMedia: View {
                     .foregroundStyle(.white)
             } else {
                 ContentUnavailableView(
-                    asset.mediaType == .video ? "视频缩略图不可用" : "大图预览不可用",
+                    asset.mediaType == .video ? "视频缩略图不可用" : "尚未缓存离线预览",
                     systemImage: asset.systemImage,
-                    description: Text("原文件不会在主线程直接读取；可返回图库继续管理。")
+                    description: Text(
+                        catalog.isSourceReachable(for: asset)
+                            ? "原文件不会在主线程直接读取；可返回图库继续管理。"
+                            : "这张照片还没有生成离线预览，接回原盘后即可查看。"
+                    )
                 )
                 .foregroundStyle(.white)
             }
@@ -1522,22 +1531,55 @@ private struct LocalPhotoViewerMedia: View {
                     .shadow(radius: 5)
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if isShowingThumbnailFallback {
+                Text("离线预览 · 正在载入更清晰的版本")
+                    .font(.caption2)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .foregroundStyle(.white)
+                    .padding(14)
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 三级回退，任何情况下都不再出现空白页：
+        //   ① 内存里的离线预览           → 立即
+        //   ② 已有的缩略图放大顶上        → 立即（模糊但有内容）
+        //   ③ 磁盘预览或实时解码          → 就绪后替换
         .task(id: request?.cacheKey) {
             image = nil
+            isShowingThumbnailFallback = false
             guard let request else {
                 isLoading = false
                 return
             }
+
             if let cached = previews.cachedImage(for: request) {
                 image = cached
                 isLoading = false
                 return
             }
-            isLoading = true
-            let loadedImage = await previews.image(for: request)
+
+            if let thumbnail = thumbnails.image(for: request) {
+                image = thumbnail
+                isShowingThumbnailFallback = true
+            }
+            isLoading = image == nil
+
+            // 用户主动点开的这一张优先于后台预热。
+            prewarm.beginInteractiveWork()
+            defer { prewarm.endInteractiveWork() }
+
+            let loadedImage = await previews.image(
+                for: request,
+                allowsRendering: catalog.isSourceReachable(for: asset)
+            )
             guard !Task.isCancelled else { return }
-            image = loadedImage
+            if let loadedImage {
+                image = loadedImage
+                isShowingThumbnailFallback = false
+            }
             isLoading = false
         }
     }
@@ -2146,6 +2188,7 @@ private struct CatalogAssetCell: View {
 
 private struct FolderSourceList: View {
     @EnvironmentObject private var catalog: CatalogStore
+    @EnvironmentObject private var prewarm: DerivedImagePrewarmStore
     @State private var sourcePendingRemoval: PhotoSource?
     /// 每个来源的派生图占用。取消总量预算后，这是用户掌握磁盘占用的唯一途径，
     /// 因此必须显式摊开，而不是让它在后台悄悄增长。
@@ -2184,6 +2227,13 @@ private struct FolderSourceList: View {
                                 Text("离线缓存 " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
                                     .monospacedDigit()
                             }
+                            if let progress = prewarm.progress(for: source.id), !progress.isFinished {
+                                Text(progress.description)
+                                    .monospacedDigit()
+                                ProgressView(value: progress.fraction)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 140)
+                            }
                             if source.status == .scanning {
                                 // 扫描一个大文件夹可能持续数分钟；必须显示真实的
                                 // 已扫描 / 总数，否则界面看起来像卡死。
@@ -2216,6 +2266,29 @@ private struct FolderSourceList: View {
                             .buttonStyle(.bordered)
                         }
 
+                        if let progress = prewarm.progress(for: source.id), !progress.isFinished {
+                            Button(progress.isPaused ? "继续" : "暂停") {
+                                if progress.isPaused {
+                                    prewarm.start(
+                                        sourceID: source.id,
+                                        requests: catalog.derivedImageRequests(for: source.id)
+                                    )
+                                } else {
+                                    prewarm.pause(sourceID: source.id)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        } else if source.status == .ready {
+                            Button("生成离线预览") {
+                                prewarm.start(
+                                    sourceID: source.id,
+                                    requests: catalog.derivedImageRequests(for: source.id)
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .help("为该来源的全部照片生成缩略图与离线预览，之后卷退出也能浏览")
+                        }
+
                         Button("移除…") {
                             sourcePendingRemoval = source
                         }
@@ -2228,6 +2301,9 @@ private struct FolderSourceList: View {
             }
         }
         .task(id: catalog.sources.map(\.id)) {
+            await refreshCacheSizes()
+        }
+        .task(id: prewarm.progressBySourceID.mapValues(\.completed)) {
             await refreshCacheSizes()
         }
         // 移除是不可撤销的：评分、标记与调整配方会随索引一起消失，
