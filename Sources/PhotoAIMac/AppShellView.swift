@@ -102,6 +102,13 @@ struct AppShellView: View {
         )) { _ in
             catalog.recoverSourcesAvailableAgain()
         }
+        // 拔盘必须成对处理。只监听挂载会让来源一直停在"可用"，
+        // 界面于是完全不提示已经离线，未缓存的照片还会继续尝试读原文件。
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didUnmountNotification
+        )) { _ in
+            catalog.markUnavailableSourcesMissing()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
@@ -493,28 +500,8 @@ private struct LibraryPlaceholderView: View {
                 Divider()
             }
 
-            if let progress = originalExporter.progressDescription {
-                HStack(spacing: 8) {
-                    if originalExporter.state.isActive {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: originalExporter.failures.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
-                            .foregroundStyle(originalExporter.failures.isEmpty ? .green : .orange)
-                    }
-                    Text(progress)
-                        .font(.footnote)
-                        .lineLimit(1)
-                    Spacer()
-                    if originalExporter.state.isActive {
-                        Button("取消") { originalExporter.cancel() }
-                            .controlSize(.small)
-                    }
-                }
+            OriginalExportStatusBar()
                 .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                Divider()
-            }
 
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.shield")
@@ -1270,6 +1257,9 @@ private struct PhotoViewerView: View {
             Divider()
             viewerContent
                 .layoutPriority(1)
+            OriginalExportStatusBar()
+                .padding(.horizontal, 18)
+                .fixedSize(horizontal: false, vertical: true)
             Divider()
             metadataContent
                 .fixedSize(horizontal: false, vertical: true)
@@ -1355,7 +1345,14 @@ private struct PhotoViewerView: View {
                     } label: {
                         Label("导出", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(originalExporter.state.isActive)
+                    // 导出复制的是原文件，来源离线时必然失败。与其让它失败再报错，
+                    // 不如直接拦住并说明原因——离线可看是靠本机派生图撑着的。
+                    .disabled(originalExporter.state.isActive || !catalog.isSourceReachable(for: asset))
+                    .help(
+                        catalog.isSourceReachable(for: asset)
+                            ? "导出原文件"
+                            : "来源离线：接回原盘后才能导出原文件"
+                    )
                 }
             case let .applePhotos(assetID):
                 if applePhotos.assets.contains(where: { $0.id == assetID }) {
@@ -2188,6 +2185,43 @@ private struct CatalogAssetCell: View {
         thumbnailToken = thumbnails.load(request, allowsRendering: isReachable) { image in
             thumbnailState = ThumbnailViewState.completed(with: image)
             thumbnailToken = nil
+        }
+    }
+}
+
+/// 原文件导出的状态条。
+///
+/// 它必须能出现在每一个可以发起导出的地方。此前只画在图库里，而大图预览与快速筛选
+/// 都是盖在图库之上的覆盖层——从详情页导出时，成功与失败的提示都画在被遮住的那一层，
+/// 用户看到的就是"点了没反应"。
+struct OriginalExportStatusBar: View {
+    @EnvironmentObject private var originalExporter: OriginalPhotoExportStore
+
+    var body: some View {
+        if let progress = originalExporter.progressDescription {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 8) {
+                    if originalExporter.state.isActive {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: originalExporter.failures.isEmpty
+                            ? "checkmark.circle" : "exclamationmark.triangle")
+                            .foregroundStyle(originalExporter.failures.isEmpty ? .green : .orange)
+                    }
+                    Text(progress)
+                        .font(.footnote)
+                        .lineLimit(2)
+                    Spacer()
+                    if originalExporter.state.isActive {
+                        Button("取消") { originalExporter.cancel() }
+                            .controlSize(.small)
+                    }
+                }
+                .padding(.vertical, 8)
+                Divider()
+            }
         }
     }
 }

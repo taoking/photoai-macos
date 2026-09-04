@@ -143,8 +143,18 @@ final class OriginalPhotoExportStore: ObservableObject {
         guard totalCount > 0 else { return nil }
         var components = ["\(state.title) \(completedCount) / \(totalCount)"]
         if let currentFilename, state.isActive { components.append(currentFilename) }
-        if !failures.isEmpty { components.append("失败 \(failures.count)") }
+        if let failureSummary { components.append(failureSummary) }
         return components.joined(separator: " · ")
+    }
+
+    /// 失败原因要写进提示本身。只报一个"失败 1"等于没说：用户看不出是原盘拔了、
+    /// 目标已存在同名文件，还是别的原因。
+    var failureSummary: String? {
+        guard let first = failures.first else { return nil }
+        if failures.count == 1 {
+            return "失败：\(first.filename) — \(first.message)"
+        }
+        return "失败 \(failures.count) 项，首个：\(first.filename) — \(first.message)"
     }
 
     func chooseDestinationAndStart(

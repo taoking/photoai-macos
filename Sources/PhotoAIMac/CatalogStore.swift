@@ -326,6 +326,24 @@ final class CatalogStore: ObservableObject {
         }
     }
 
+    /// 外置盘拔出时把受影响的来源标记为离线。
+    ///
+    /// 与 `recoverSourcesAvailableAgain` 成对。只监听挂载而不监听卸载会让来源一直
+    /// 停在 `ready`：文件夹页谎报"可用"、"离线"角标不出现，未缓存的照片还会继续
+    /// 发起注定失败的实时解码。这里只改状态，不动任何资产记录——离线浏览正是靠
+    /// 那些记录和已生成的派生图撑着。
+    func markUnavailableSourcesMissing() {
+        for source in sources where source.status == .ready {
+            guard !FileManager.default.fileExists(atPath: source.lastKnownPath) else { continue }
+            guard let index = sources.firstIndex(where: { $0.id == source.id }) else { continue }
+            scanTasks[source.id]?.cancel()
+            scanTasks[source.id] = nil
+            scanProgress[source.id] = nil
+            sources[index].status = .missing
+            persist()
+        }
+    }
+
     /// 一个来源下全部资产的派生图请求，供整卷预热使用。
     func derivedImageRequests(for sourceID: UUID) -> [DerivedImageRequest] {
         assets.lazy.filter { $0.sourceID == sourceID }.compactMap(derivedImageRequest(for:))

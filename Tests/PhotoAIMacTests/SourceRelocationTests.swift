@@ -270,3 +270,109 @@ struct VolumeRecoveryTests {
         #expect(store.sources.first(where: { $0.id == staysGoneID })?.status == .missing)
     }
 }
+
+@MainActor
+struct OfflineExportFeedbackTests {
+    /// 卷拔掉后从详情页导出会失败，但此前提示画在被大图预览遮住的图库层里，
+    /// 用户看到的是"点了没反应"。失败原因必须写进提示本身。
+    @Test
+    func exportFailureNamesTheFileAndTheReason() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-ExportFail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let photos = container.appendingPathComponent("卷", isDirectory: true)
+        let destination = container.appendingPathComponent("导出目标", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data([0xFF, 0xD8, 0xFF]).write(to: photos.appendingPathComponent("DSC00001.JPG"))
+
+        let store = CatalogStore(
+            storageURL: container.appendingPathComponent("catalog.json"),
+            derivedImageCache: DerivedImageCache(rootURL: container.appendingPathComponent("Derived"))
+        )
+        await store.addFolder(photos)
+        let asset = try #require(store.assets.first)
+
+        // 卷被拔掉：原文件读不到了。
+        try FileManager.default.removeItem(at: photos)
+
+        let request = try #require(store.originalExportRequest(for: asset))
+        let exporter = OriginalPhotoExportStore()
+        exporter.startForTesting(requests: [request], destinationURL: destination)
+        for _ in 0..<200 where exporter.state.isActive {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let summary = try #require(exporter.failureSummary)
+        #expect(summary.contains("DSC00001.JPG"), "提示里必须指名是哪张照片：\(summary)")
+        #expect(summary.count > "失败 1".count, "只报数量等于没说明原因：\(summary)")
+        #expect(exporter.progressDescription?.contains("DSC00001.JPG") == true)
+    }
+
+    /// 来源在线时不应该有失败摘要，避免正常导出也显示告警。
+    @Test
+    func successfulExportsReportNoFailureSummary() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-ExportOK-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let photos = container.appendingPathComponent("卷", isDirectory: true)
+        let destination = container.appendingPathComponent("导出目标", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data([0xFF, 0xD8, 0xFF]).write(to: photos.appendingPathComponent("DSC00002.JPG"))
+
+        let store = CatalogStore(
+            storageURL: container.appendingPathComponent("catalog.json"),
+            derivedImageCache: DerivedImageCache(rootURL: container.appendingPathComponent("Derived"))
+        )
+        await store.addFolder(photos)
+        let asset = try #require(store.assets.first)
+
+        let request = try #require(store.originalExportRequest(for: asset))
+        let exporter = OriginalPhotoExportStore()
+        exporter.startForTesting(requests: [request], destinationURL: destination)
+        for _ in 0..<200 where exporter.state != .completed {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(exporter.failureSummary == nil)
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("DSC00002.JPG").path))
+    }
+}
+
+@MainActor
+struct VolumeUnmountTests {
+    /// 只监听挂载而不监听卸载，来源会一直停在 ready：文件夹页谎报"可用"、
+    /// 离线角标不出现、未缓存的照片还会继续发起注定失败的实时解码。
+    @Test
+    func unmountedSourcesAreMarkedMissingWithoutLosingAssets() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Unmount-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let volume = container.appendingPathComponent("卷", isDirectory: true)
+        try FileManager.default.createDirectory(at: volume, withIntermediateDirectories: true)
+        try Data([0xFF, 0xD8, 0xFF]).write(to: volume.appendingPathComponent("photo.jpg"))
+
+        let store = CatalogStore(
+            storageURL: container.appendingPathComponent("catalog.json"),
+            derivedImageCache: DerivedImageCache(rootURL: container.appendingPathComponent("Derived"))
+        )
+        await store.addFolder(volume)
+        let assetID = try #require(store.assets.first?.id)
+        #expect(store.sources.first?.status == .ready)
+
+        try FileManager.default.removeItem(at: volume)
+        store.markUnavailableSourcesMissing()
+
+        #expect(store.sources.first?.status == .missing)
+        // 资产记录必须原样保留：离线浏览正是靠它们与已生成的派生图撑着。
+        #expect(store.asset(withID: assetID) != nil)
+        #expect(store.unreachableSources.count == 1)
+    }
+}
