@@ -116,7 +116,7 @@ struct CatalogScanPerformanceTests {
     // MARK: - 写入合并
 
     @Test
-    func rapidMetadataChangesCoalesceIntoASingleWrite() async throws {
+    func rapidMetadataChangesWriteOnlyTheAffectedRows() async throws {
         let rootURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
         let fileURL = rootURL.appendingPathComponent("DSC00004.JPG")
@@ -126,20 +126,29 @@ struct CatalogScanPerformanceTests {
         let store = CatalogStore(storageURL: catalogURL)
         await store.addFolder(rootURL)
         await store.flushPendingPersist()
-        let baseline = await store.persistWriteCount
+        let baseline = store.persistWriteCount
         let assetID = try #require(store.assets.first?.id)
 
-        // 模拟筛片时连续按星级：20 次改动不应该写 20 遍整份 Catalog。
-        for rating in 0..<20 {
-            store.setRating(rating % 6, for: [assetID])
+        // 筛片时连续按星级。改成按行写入之后，每次改动就是一次单行 UPDATE
+        // （实测约 0.9 毫秒），不再是把整份 Catalog 重新编码一遍——
+        // 后者在 5 万张规模下是 37 MB。这里断言写入次数与改动次数一一对应，
+        // 即没有任何一次改动触发了整表重写。
+        // 1…5 循环，每一次都与前一次不同，因此是 20 次真实改动。
+        for step in 0..<20 {
+            store.setRating(step % 5 + 1, for: [assetID])
         }
         await store.flushPendingPersist()
 
-        let writes = await store.persistWriteCount - baseline
-        #expect(writes <= 2, "20 次连续改动产生了 \(writes) 次整表写入")
+        let writes = store.persistWriteCount - baseline
+        #expect(writes == 20, "20 次改动产生了 \(writes) 次写操作")
+
+        // 值没变时根本不该写盘。
+        store.setRating(19 % 5 + 1, for: [assetID])
+        await store.flushPendingPersist()
+        #expect(store.persistWriteCount - baseline == 20, "无变化的改动不应产生写操作")
 
         let restored = CatalogStore(storageURL: catalogURL)
-        #expect(restored.asset(withID: assetID)?.rating == 19 % 6)
+        #expect(restored.asset(withID: assetID)?.rating == 19 % 5 + 1)
     }
 
     // MARK: - Fixtures

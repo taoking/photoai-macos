@@ -25,10 +25,11 @@ struct PhotoManagementTests {
         #expect(asset.colorLabel == "red")
         #expect(asset.comment == "旅行精选")
 
-        let json = try String(contentsOf: fixture.catalogURL, encoding: .utf8)
-        #expect(json.contains("\"rating\" : 5"))
-        #expect(json.contains("\"colorLabel\" : \"red\""))
-        #expect(json.contains("\"comment\" : \"旅行精选\""))
+        // 断言的是"重新打开后读得到"，而不是某个文件里的文本。
+        // 持久化后端已从 JSON 换成 SQLite，测试不应该绑死在存储格式上。
+        #expect(FileManager.default.fileExists(
+            atPath: CatalogMigration.databaseURL(forLegacyJSON: fixture.catalogURL).path
+        ))
     }
 
     @Test
@@ -43,8 +44,6 @@ struct PhotoManagementTests {
 
         let restored = CatalogStore(storageURL: fixture.catalogURL)
         #expect(restored.asset(withID: assetID)?.flag == .pick)
-        let json = try String(contentsOf: fixture.catalogURL, encoding: .utf8)
-        #expect(json.contains("\"flag\" : \"picked\""))
     }
 
     @Test
