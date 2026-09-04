@@ -262,6 +262,66 @@ struct LibraryOrderingTests {
         #expect(scanned.map(\.filename) == store.assets.map(\.filename))
     }
 
+    /// 顺序不能依赖磁盘快照里的数组顺序。
+    ///
+    /// 快照是用写它时的排序规则排好的；规则改变后若直接沿用，新顺序要等到
+    /// 下一次重扫才生效。实测症状就是改成倒序后重启，DSC06691 仍排在
+    /// DSC06693 前面。
+    @Test
+    func loadingAnAscendinglyStoredSnapshotStillYieldsDescendingOrder() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let catalogURL = directory.appendingPathComponent("catalog.json")
+
+        let source = PhotoSource(
+            id: UUID(),
+            bookmarkData: Data(),
+            displayName: "旧顺序",
+            lastKnownPath: directory.path,
+            createdAt: .now,
+            lastScannedAt: nil,
+            status: .ready,
+            assetCount: 3
+        )
+        // 按旧规则（升序）写入磁盘。
+        let ascending = ["DSC06691.ARW", "DSC06692.ARW", "DSC06693.ARW"].map {
+            makeAsset(named: $0, sourceID: source.id)
+        }
+        try CatalogPersistence(fileURL: catalogURL).save(
+            CatalogSnapshot(sources: [source], assets: ascending)
+        )
+
+        let store = CatalogStore(storageURL: catalogURL)
+        #expect(store.assets.map(\.filename) == ["DSC06693.ARW", "DSC06692.ARW", "DSC06691.ARW"])
+    }
+
+    private func makeAsset(named filename: String, sourceID: UUID) -> PhotoAsset {
+        PhotoAsset(
+            id: UUID(),
+            sourceID: sourceID,
+            relativePath: filename,
+            filename: filename,
+            fileExtension: (filename as NSString).pathExtension.lowercased(),
+            fileSize: 1_024,
+            modifiedAt: nil,
+            captureDate: nil,
+            width: nil,
+            height: nil,
+            cameraMake: nil,
+            cameraModel: nil,
+            lens: nil,
+            focalLength: nil,
+            aperture: nil,
+            shutterSpeed: nil,
+            iso: nil,
+            mediaType: .image,
+            rawType: "ARW",
+            rating: 0,
+            flag: .none,
+            isFavorite: false
+        )
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhotoAI-Order-\(UUID().uuidString)", isDirectory: true)

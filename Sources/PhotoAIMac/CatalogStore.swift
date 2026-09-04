@@ -37,7 +37,11 @@ final class CatalogStore: ObservableObject {
         do {
             let snapshot = try persistence.load()
             sources = snapshot.sources
-            assets = snapshot.assets
+            // 必须在这里重新排序，不能沿用快照里的数组顺序。
+            // 顺序规则会随版本变化，而磁盘上的快照是用写它时的旧规则排好的；
+            // 若直接采用，新规则要等到下一次重扫才生效——这正是"改成倒序后
+            // 重启仍看到升序"的原因。
+            assets = snapshot.assets.sorted(by: PhotoAsset.isOrderedBefore)
             rebuildAssetIndex()
         } catch {
             sources = []
@@ -50,7 +54,7 @@ final class CatalogStore: ObservableObject {
         persistence = CatalogPersistence(fileURL: storageURL)
         writer = CatalogWriter(persistence: persistence)
         sources = snapshot.sources
-        assets = snapshot.assets
+        assets = snapshot.assets.sorted(by: PhotoAsset.isOrderedBefore)
         rebuildAssetIndex()
     }
 
