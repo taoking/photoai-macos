@@ -147,7 +147,8 @@ struct CatalogTests {
     func thumbnailCacheKeyChangesWhenSourceChanges() {
         let assetID = UUID()
         let initialDate = Date(timeIntervalSinceReferenceDate: 100)
-        let initial = ThumbnailRequest(
+        let initial = DerivedImageRequest(
+            sourceID: UUID(),
             assetID: assetID,
             bookmarkData: Data(),
             lastKnownRootPath: "/fixture",
@@ -155,7 +156,8 @@ struct CatalogTests {
             modificationDate: initialDate,
             mediaType: .image
         )
-        let changed = ThumbnailRequest(
+        let changed = DerivedImageRequest(
+            sourceID: UUID(),
             assetID: assetID,
             bookmarkData: Data(),
             lastKnownRootPath: "/fixture",

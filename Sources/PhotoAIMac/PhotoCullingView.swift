@@ -453,7 +453,7 @@ private struct CullingPreviewPane: View {
     @State private var isLoading = false
 
     var body: some View {
-        let request = catalog.previewRequest(for: asset)
+        let request = catalog.derivedImageRequest(for: asset)
         ZStack {
             Color.black.opacity(0.94)
             if let image {

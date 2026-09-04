@@ -327,7 +327,7 @@ private struct FilmstripCell: View {
     @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
-        let request = catalog.thumbnailRequest(for: asset)
+        let request = catalog.derivedImageRequest(for: asset)
 
         Button {
             catalog.select(assetID: asset.id, in: catalog.assets(for: .allPhotos).map(\.id), modifiers: [])
@@ -363,7 +363,7 @@ private struct FilmstripCell: View {
         }
     }
 
-    private func loadThumbnail(_ request: ThumbnailRequest?) {
+    private func loadThumbnail(_ request: DerivedImageRequest?) {
         thumbnails.cancel(thumbnailToken)
         thumbnailToken = nil
         thumbnail = request.flatMap(thumbnails.image(for:))

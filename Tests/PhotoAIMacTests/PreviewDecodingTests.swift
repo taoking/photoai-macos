@@ -94,86 +94,87 @@ struct PreviewDecodingTests {
         #expect(fixture.store.decodeCount == 1)
     }
 
-    // MARK: - 磁盘缓存
+    // MARK: - 派生图磁盘层
 
     @Test
-    func diskCacheUsesLossyEncodingInsteadOfUncompressedTIFF() async throws {
+    func derivedImagesAreStoredPerSourceAndSurviveTheOriginal() async throws {
+        // 离线索引的核心：卷退出后，派生图就是这些照片在本机的唯一表示。
         let fixture = try makeStoreFixture()
         defer { fixture.cleanUp() }
 
         _ = await fixture.store.image(for: fixture.request)
-        try await waitForDiskCacheFile(in: fixture.cacheDirectory)
 
-        let files = try FileManager.default.contentsOfDirectory(
-            at: fixture.cacheDirectory,
-            includingPropertiesForKeys: [.fileSizeKey]
+        let cached = fixture.cache.image(for: fixture.request, tier: .preview)
+        #expect(cached != nil)
+
+        // 落在该来源自己的目录下，移除来源时才能整目录清掉。
+        let expected = fixture.cache.fileURL(
+            sourceID: fixture.request.sourceID,
+            assetID: fixture.request.assetID,
+            tier: .preview
         )
-        let cached = try #require(files.first)
-        #expect(cached.pathExtension == "jpg")
-
-        // 900×600 的未压缩 TIFF 约 2 MB；JPEG 必须远小于它。
-        let size = try #require(try cached.resourceValues(forKeys: [.fileSizeKey]).fileSize)
-        #expect(size < 400_000, "缓存文件 \(size) 字节，看起来仍是未压缩数据")
+        #expect(FileManager.default.fileExists(atPath: expected.path))
+        #expect(expected.pathExtension == "jpg")
     }
 
     @Test
-    func diskCacheEvictsLeastRecentlyUsedFilesBeyondTheBudget() throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+    func offlineSourcesReadFromCacheWithoutTouchingTheOriginal() async throws {
+        let fixture = try makeStoreFixture()
+        defer { fixture.cleanUp() }
 
-        // 三个 100 KB 文件，预算只放得下两个。
-        let payload = Data(repeating: 0xAB, count: 100_000)
-        let names = ["oldest.jpg", "middle.jpg", "newest.jpg"]
-        for (index, name) in names.enumerated() {
-            let url = directory.appendingPathComponent(name)
-            try payload.write(to: url)
-            try FileManager.default.setAttributes(
-                [.modificationDate: Date(timeIntervalSinceReferenceDate: Double(index) * 1_000)],
-                ofItemAtPath: url.path
-            )
-        }
-        // 旧格式残留必须无条件清掉。
-        try payload.write(to: directory.appendingPathComponent("legacy.tiff"))
+        _ = await fixture.store.image(for: fixture.request)
+        // 卷退出：原文件不可读。
+        try FileManager.default.removeItem(at: fixture.originalURL)
 
-        ImageCacheMaintenance.enforceBudget(directoryURL: directory, byteBudget: 250_000)
-
-        let remaining = Set(
-            try FileManager.default.contentsOfDirectory(atPath: directory.path)
-        )
-        #expect(!remaining.contains("legacy.tiff"))
-        #expect(remaining.contains("newest.jpg"))
-        #expect(!remaining.contains("oldest.jpg"))
+        let offlineStore = PhotoPreviewStore(cache: fixture.cache)
+        let image = await offlineStore.image(for: fixture.request, allowsRendering: false)
+        #expect(image != nil)
     }
 
     @Test
-    func budgetEnforcementKeepsEverythingWhenUnderBudget() throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try Data(repeating: 0xAB, count: 1_000).write(to: directory.appendingPathComponent("a.jpg"))
-        try Data(repeating: 0xAB, count: 1_000).write(to: directory.appendingPathComponent("b.jpg"))
+    func removingASourceDropsItsDerivedImages() async throws {
+        let fixture = try makeStoreFixture()
+        defer { fixture.cleanUp() }
 
-        ImageCacheMaintenance.enforceBudget(directoryURL: directory, byteBudget: 10_000)
+        _ = await fixture.store.image(for: fixture.request)
+        #expect(fixture.cache.byteSize(for: fixture.request.sourceID) > 0)
 
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 2)
+        fixture.cache.removeAll(for: fixture.request.sourceID)
+        #expect(fixture.cache.byteSize(for: fixture.request.sourceID) == 0)
+        #expect(fixture.cache.image(for: fixture.request, tier: .preview) == nil)
+    }
+
+    @Test
+    func staleEntriesAreIgnoredWhenTheOriginalIsNewer() async throws {
+        let fixture = try makeStoreFixture()
+        defer { fixture.cleanUp() }
+
+        _ = await fixture.store.image(for: fixture.request)
+        #expect(fixture.cache.hasFreshEntry(for: fixture.request, tier: .preview))
+
+        // 原文件在缓存写入之后又被改过：缓存必须判为过期。
+        var newer = fixture.request
+        newer = DerivedImageRequest(
+            sourceID: fixture.request.sourceID,
+            assetID: fixture.request.assetID,
+            bookmarkData: fixture.request.bookmarkData,
+            lastKnownRootPath: fixture.request.lastKnownRootPath,
+            relativePath: fixture.request.relativePath,
+            modificationDate: Date(timeIntervalSinceNow: 3_600),
+            mediaType: .image
+        )
+        #expect(!fixture.cache.hasFreshEntry(for: newer, tier: .preview))
     }
 
     // MARK: - Fixtures
 
-    /// 磁盘写入是后台 detached 任务，测试需要等它落地。
-    private func waitForDiskCacheFile(in directory: URL) async throws {
-        for _ in 0..<100 {
-            let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-            if !files.isEmpty { return }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        Issue.record("预览磁盘缓存没有在预期时间内写出文件")
-    }
-
     private struct StoreFixture {
         let store: PhotoPreviewStore
-        let request: PhotoPreviewRequest
+        let cache: DerivedImageCache
+        let request: DerivedImageRequest
         let directory: URL
         let cacheDirectory: URL
+        let originalURL: URL
 
         func cleanUp() {
             try? FileManager.default.removeItem(at: directory)
@@ -187,9 +188,10 @@ struct PreviewDecodingTests {
         let fileURL = directory.appendingPathComponent("preview.jpg")
         try writeJPEG(width: 900, height: 600, to: fileURL)
 
-        // bookmarkData 为空时 PhotoPreviewRenderer 会回退到 lastKnownRootPath，
+        // bookmarkData 为空时渲染器会回退到 lastKnownRootPath，
         // 因此测试无需真实的安全作用域书签。
-        let request = PhotoPreviewRequest(
+        let request = DerivedImageRequest(
+            sourceID: UUID(),
             assetID: UUID(),
             bookmarkData: Data(),
             lastKnownRootPath: directory.path,
@@ -197,11 +199,14 @@ struct PreviewDecodingTests {
             modificationDate: Date(timeIntervalSinceReferenceDate: 1_000),
             mediaType: .image
         )
+        let cache = DerivedImageCache(rootURL: cacheDirectory)
         return StoreFixture(
-            store: PhotoPreviewStore(cacheDirectoryURL: cacheDirectory),
+            store: PhotoPreviewStore(cache: cache),
+            cache: cache,
             request: request,
             directory: directory,
-            cacheDirectory: cacheDirectory
+            cacheDirectory: cacheDirectory,
+            originalURL: fileURL
         )
     }
 
@@ -262,7 +267,8 @@ struct ThumbnailDiskCacheTests {
 
         let fileURL = directory.appendingPathComponent("photo.jpg")
         try writeJPEG(width: 800, height: 600, to: fileURL)
-        let request = ThumbnailRequest(
+        let request = DerivedImageRequest(
+            sourceID: UUID(),
             assetID: UUID(),
             bookmarkData: Data(),
             lastKnownRootPath: directory.path,
@@ -271,14 +277,15 @@ struct ThumbnailDiskCacheTests {
             mediaType: .image
         )
 
-        let first = ThumbnailStore(cacheDirectoryURL: cacheDirectory)
+        let cache = DerivedImageCache(rootURL: cacheDirectory)
+        let first = ThumbnailStore(cache: cache)
         _ = await loadThumbnail(from: first, request: request)
-        try await waitForFile(in: cacheDirectory)
 
         // 原文件消失后，新实例仍必须拿得到缩略图——只能来自磁盘缓存。
+        // 这正是"扫描完退出卷、照片依然看得见"所依赖的路径。
         try FileManager.default.removeItem(at: fileURL)
-        let second = ThumbnailStore(cacheDirectoryURL: cacheDirectory)
-        let restored = await loadThumbnail(from: second, request: request)
+        let second = ThumbnailStore(cache: cache)
+        let restored = await loadThumbnail(from: second, request: request, allowsRendering: false)
 
         #expect(restored != nil)
     }
@@ -293,10 +300,11 @@ struct ThumbnailDiskCacheTests {
         }
         try writeJPEG(width: 400, height: 300, to: directory.appendingPathComponent("photo.jpg"))
 
-        let store = ThumbnailStore(cacheDirectoryURL: cacheDirectory)
+        let store = ThumbnailStore(cache: DerivedImageCache(rootURL: cacheDirectory))
         let image = await loadThumbnail(
             from: store,
-            request: ThumbnailRequest(
+            request: DerivedImageRequest(
+                sourceID: UUID(),
                 assetID: UUID(),
                 bookmarkData: Data(),
                 lastKnownRootPath: directory.path,
@@ -308,10 +316,14 @@ struct ThumbnailDiskCacheTests {
         #expect(image != nil)
     }
 
-    private func loadThumbnail(from store: ThumbnailStore, request: ThumbnailRequest) async -> NSImage? {
+    private func loadThumbnail(
+        from store: ThumbnailStore,
+        request: DerivedImageRequest,
+        allowsRendering: Bool = true
+    ) async -> NSImage? {
         await withCheckedContinuation { continuation in
             var resumed = false
-            _ = store.load(request) { image in
+            _ = store.load(request, allowsRendering: allowsRendering) { image in
                 guard !resumed else { return }
                 resumed = true
                 continuation.resume(returning: image)
@@ -319,14 +331,6 @@ struct ThumbnailDiskCacheTests {
         }
     }
 
-    private func waitForFile(in directory: URL) async throws {
-        for _ in 0..<100 {
-            let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-            if !files.isEmpty { return }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        Issue.record("缩略图磁盘缓存没有在预期时间内写出文件")
-    }
 
     private func makeDirectory(_ name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory

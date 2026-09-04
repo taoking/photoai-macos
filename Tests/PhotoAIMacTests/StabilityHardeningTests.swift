@@ -56,7 +56,8 @@ struct StabilityHardeningTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let filename = "corrupt.jpg"
         try Data([0x00, 0x12, 0x34]).write(to: root.appendingPathComponent(filename))
-        let request = ThumbnailRequest(
+        let request = DerivedImageRequest(
+            sourceID: UUID(),
             assetID: UUID(),
             bookmarkData: Data(),
             lastKnownRootPath: root.path,
@@ -64,13 +65,18 @@ struct StabilityHardeningTests {
             modificationDate: .now,
             mediaType: .image
         )
-        let store = ThumbnailStore()
+        // 注入临时缓存目录：默认路径指向真实的 Application Support，
+        // 测试绝不能写进用户数据。
+        let cacheRoot = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+        let store = ThumbnailStore(cache: DerivedImageCache(rootURL: cacheRoot))
         store.load(request) { _ in }
 
-        for _ in 0..<100 where !store.completedKeys.contains(request.cacheKey) {
+        let key = request.memoryCacheKey(for: .thumbnail)
+        for _ in 0..<100 where !store.completedKeys.contains(key) {
             try? await Task.sleep(for: .milliseconds(10))
         }
-        #expect(store.completedKeys.contains(request.cacheKey))
+        #expect(store.completedKeys.contains(key))
         #expect(store.image(for: request) == nil)
     }
 
@@ -94,7 +100,8 @@ struct StabilityHardeningTests {
     @Test
     @MainActor
     func editorReturnRequestsOneVisibleThumbnailRefresh() {
-        let store = ThumbnailStore()
+        let store = ThumbnailStore(cache: DerivedImageCache(rootURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Refresh-\(UUID().uuidString)", isDirectory: true)))
 
         #expect(store.visibleSubscriberGeneration == 0)
         store.refreshVisibleSubscribers()

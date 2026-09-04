@@ -206,14 +206,16 @@ struct ThumbnailVolumePolicyTests {
     /// 6 路并发 22.4s，本地卷则相反。因此必须按卷分流。
     @Test
     func localVolumesAreTreatedAsParallelCapable() {
-        let store = ThumbnailStore()
+        let store = ThumbnailStore(cache: DerivedImageCache(rootURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Volume-\(UUID().uuidString)", isDirectory: true)))
         #expect(store.isLocalVolume(rootPath: FileManager.default.temporaryDirectory.path))
     }
 
     @Test
     func unknownPathsFallBackToTheParallelPath() {
         // 读不到卷信息时不该让整个来源退化成串行。
-        let store = ThumbnailStore()
+        let store = ThumbnailStore(cache: DerivedImageCache(rootURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("PhotoAI-Volume-\(UUID().uuidString)", isDirectory: true)))
         #expect(store.isLocalVolume(rootPath: "/该路径不存在/\(UUID().uuidString)"))
     }
 }

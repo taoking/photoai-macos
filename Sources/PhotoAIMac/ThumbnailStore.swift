@@ -2,20 +2,6 @@
 import Foundation
 import ImageIO
 
-struct ThumbnailRequest: Sendable, Hashable {
-    let assetID: UUID
-    let bookmarkData: Data
-    let lastKnownRootPath: String
-    let relativePath: String
-    let modificationDate: Date?
-    let mediaType: PhotoMediaType
-
-    var cacheKey: String {
-        let timestamp = modificationDate?.timeIntervalSinceReferenceDate ?? 0
-        return "\(assetID.uuidString)-\(timestamp)"
-    }
-}
-
 /// 单个缩略图订阅方自己的展示状态。它不发布到 `ThumbnailStore`，从而避免任意一张
 /// 缩略图完成时唤醒整个网格。
 enum ThumbnailViewState {
@@ -91,7 +77,7 @@ final class ThumbnailStore: ObservableObject {
         return isLocal
     }
 
-    private func renderingQueue(for request: ThumbnailRequest) -> OperationQueue {
+    private func renderingQueue(for request: DerivedImageRequest) -> OperationQueue {
         isLocalVolume(rootPath: request.lastKnownRootPath) ? localVolumeQueue : slowVolumeQueue
     }
     private var inFlightKeys = Set<String>()
@@ -101,43 +87,19 @@ final class ThumbnailStore: ObservableObject {
     /// 自己的缩略图，或重新订阅仍在进行的加载；它不是每张缩略图完成时的全局广播。
     @Published private(set) var visibleSubscriberGeneration = 0
 
-    /// 缩略图的磁盘缓存目录。
-    ///
-    /// 此前 `ThumbnailStore` 只有内存缓存，进程一退出全部作废：重启后每一张
-    /// 缩略图都要重新从原文件解码。在 MTP 这类慢速卷上实测 0.75 秒/张，
-    /// 于是每次重启都要重新等上几分钟。大图预览一直有磁盘缓存，缩略图没有。
-    private let cacheDirectoryURL: URL
-    private let diskCacheByteBudget: Int
+    /// 缩略图的磁盘层。它不是可丢弃的缓存：卷退出后，这就是那些照片在本机的
+    /// 唯一表示，所以由 `DerivedImageCache` 存进 Application Support 并按来源分目录。
+    private let cache: DerivedImageCache
 
-    init(
-        cacheDirectoryURL: URL = ThumbnailStore.defaultCacheDirectoryURL,
-        diskCacheByteBudget: Int = 512 * 1_024 * 1_024
-    ) {
-        self.cacheDirectoryURL = cacheDirectoryURL
-        self.diskCacheByteBudget = diskCacheByteBudget
+    init(cache: DerivedImageCache = DerivedImageCache()) {
+        self.cache = cache
         memoryCache.countLimit = 600
         memoryCache.totalCostLimit = 160 * 1_024 * 1_024
-        ImageCacheMaintenance.scheduleCleanup(
-            directoryURL: cacheDirectoryURL,
-            byteBudget: diskCacheByteBudget
-        )
     }
 
-    static var defaultCacheDirectoryURL: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PhotoAI-Mac", isDirectory: true)
-            .appendingPathComponent("Thumbnails", isDirectory: true)
-    }
-
-    private func cacheURL(for request: ThumbnailRequest) -> URL {
-        cacheDirectoryURL.appendingPathComponent(
-            "\(request.cacheKey).\(ImageCacheMaintenance.fileExtension)",
-            isDirectory: false
-        )
-    }
-
-    func image(for request: ThumbnailRequest) -> NSImage? {
-        memoryCache.object(forKey: request.cacheKey as NSString)
+    /// 只查内存。它会在 SwiftUI 的 body 求值期间被调用，绝不能碰文件系统。
+    func image(for request: DerivedImageRequest) -> NSImage? {
+        memoryCache.object(forKey: request.memoryCacheKey(for: .thumbnail) as NSString)
     }
 
     /// 编辑器覆盖层退出后，显式让仍在屏幕上的缩略图订阅方重新连接到缓存/加载队列。
@@ -152,9 +114,12 @@ final class ThumbnailStore: ObservableObject {
 
     /// 仅让仍可见的请求方在完成时更新自己的 `@State`。缓存本身不发布全局变更，
     /// 因而一张缩略图解码完成不会迫使整个网格重算。
+    /// - Parameter allowsRendering: 来源已离线时传 false：只读缓存，
+    ///   不去碰一个注定读不到的文件。离线浏览正是靠这条路径显示照片。
     @discardableResult
     func load(
-        _ request: ThumbnailRequest,
+        _ request: DerivedImageRequest,
+        allowsRendering: Bool = true,
         completion: @escaping (NSImage?) -> Void
     ) -> ThumbnailLoadToken? {
         if let cachedImage = image(for: request) {
@@ -162,21 +127,20 @@ final class ThumbnailStore: ObservableObject {
             return nil
         }
 
-        let key = request.cacheKey
+        let key = request.memoryCacheKey(for: .thumbnail)
         let token = ThumbnailLoadToken(key: key, id: UUID())
         callbacksByKey[key, default: [:]][token.id] = completion
         guard !inFlightKeys.contains(key) else { return token }
         inFlightKeys.insert(key)
 
-        // 磁盘缓存的读写都放在后台队列上。`image(for:)` 只查内存，
-        // 因为它会在 SwiftUI 的 body 求值期间被调用，绝不能碰文件系统。
-        let diskURL = cacheURL(for: request)
-        let budget = diskCacheByteBudget
+        // 磁盘读取与解码都放在后台队列上。
+        let cache = self.cache
         renderingQueue(for: request).addOperation { [weak self] in
-            var image = ImageCacheMaintenance.loadImage(at: diskURL)
-            if image == nil, let rendered = ThumbnailRenderer.render(request) {
+            var image = cache.image(for: request, tier: .thumbnail)
+            if image == nil, allowsRendering,
+               let rendered = DerivedImageRenderer.render(request, tier: .thumbnail) {
                 image = rendered
-                ImageCacheMaintenance.write(rendered, to: diskURL, byteBudget: budget)
+                cache.store(rendered, for: request, tier: .thumbnail)
             }
 
             DispatchQueue.main.async {
@@ -211,38 +175,4 @@ final class ThumbnailStore: ObservableObject {
 struct ThumbnailLoadToken: Hashable {
     fileprivate let key: String
     fileprivate let id: UUID
-}
-
-private enum ThumbnailRenderer {
-    static func render(_ request: ThumbnailRequest) -> NSImage? {
-        guard request.mediaType == .image else { return nil }
-
-        var isStale = false
-        let resolvedRootURL = try? URL(
-            resolvingBookmarkData: request.bookmarkData,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale
-        )
-        // A debug build's unsigned identity can invalidate an earlier bookmark.
-        // The fallback is only a local path already recorded for this source; it
-        // never expands access beyond the folder that the user selected.
-        let rootURL = resolvedRootURL ?? URL(fileURLWithPath: request.lastKnownRootPath)
-
-        let hasSecurityAccess = rootURL.startAccessingSecurityScopedResource()
-        defer {
-            if hasSecurityAccess {
-                rootURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let fileURL = rootURL.appendingPathComponent(request.relativePath)
-        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
-
-        guard let image = DownsampledImageDecoder.image(from: source, maximumPixelSize: 480) else {
-            return nil
-        }
-
-        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-    }
 }

@@ -25,6 +25,10 @@ struct PhotoAIMacApp: App {
         if let icon = PhotoAIBrandAssets.logoImage {
             NSApplication.shared.applicationIconImage = icon
         }
+        // 派生图已迁到 Application Support；Caches 下的旧布局无人引用，回收掉。
+        Task.detached(priority: .background) {
+            DerivedImageCache.removeLegacyCaches()
+        }
     }
 
     var body: some Scene {

@@ -765,7 +765,7 @@ private struct PersonFacePreview: View {
     @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
-        let request = catalog.assets.first(where: { $0.id == face.assetID }).flatMap(catalog.thumbnailRequest)
+        let request = catalog.assets.first(where: { $0.id == face.assetID }).flatMap(catalog.derivedImageRequest)
 
         ZStack {
             if case let .loaded(thumbnail) = thumbnailState,
@@ -797,7 +797,7 @@ private struct PersonFacePreview: View {
         .accessibilityLabel("人物关联照片预览")
     }
 
-    private func loadThumbnail(_ request: ThumbnailRequest?) {
+    private func loadThumbnail(_ request: DerivedImageRequest?) {
         thumbnails.cancel(thumbnailToken)
         thumbnailToken = nil
         guard let request else {
@@ -1492,7 +1492,7 @@ private struct LocalPhotoViewerMedia: View {
     @State private var isLoading = false
 
     var body: some View {
-        let request = catalog.previewRequest(for: asset)
+        let request = catalog.derivedImageRequest(for: asset)
         ZStack {
             Color.black.opacity(0.92)
             if let image {
@@ -1995,7 +1995,7 @@ private struct CatalogAssetCell: View {
     @State private var thumbnailToken: ThumbnailLoadToken?
 
     var body: some View {
-        let request = catalog.thumbnailRequest(for: asset)
+        let request = catalog.derivedImageRequest(for: asset)
         let isSelected = catalog.selectedAssetIDs.contains(asset.id)
         // 编辑器覆盖层关闭时，macOS 有机会保留 Cell 却丢失它的局部 State。
         // 缓存是缩略图的权威来源；在展示层直接兜底可避免这类 Cell 把已解码的
@@ -2024,11 +2024,12 @@ private struct CatalogAssetCell: View {
                             .font(.title2)
                             .foregroundStyle(.secondary)
                     } else if !isSourceReachable {
-                        // 与解码失败区分：这张图不是坏了，是它所在的文件夹不在了。
+                        // 已经有缓存的照片走上面的分支正常显示；到这里说明这张
+                        // 既没有派生图、原文件也读不到。
                         VStack(spacing: 4) {
                             Image(systemName: "folder.badge.questionmark")
                                 .font(.title2)
-                            Text("文件夹缺失")
+                            Text("未缓存 · 来源离线")
                                 .font(.caption2)
                         }
                         .foregroundStyle(.orange)
@@ -2058,6 +2059,15 @@ private struct CatalogAssetCell: View {
                         Image(systemName: asset.flag == .pick ? "flag.fill" : "xmark.circle.fill")
                             .foregroundStyle(asset.flag == .pick ? .green : .red)
                             .padding(7)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    // 看得见但原文件不在：导出、编辑这些需要原文件的操作都不可用。
+                    if !isSourceReachable, displayedThumbnail != nil {
+                        Image(systemName: "bolt.horizontal.circle.fill")
+                            .foregroundStyle(.orange)
+                            .padding(7)
+                            .help("来源离线，正在显示本机缓存的预览")
                     }
                 }
 
@@ -2112,21 +2122,22 @@ private struct CatalogAssetCell: View {
         )
     }
 
-    private func loadThumbnail(_ request: ThumbnailRequest?) {
+    private func loadThumbnail(_ request: DerivedImageRequest?) {
         thumbnails.cancel(thumbnailToken)
         thumbnailToken = nil
-        // 来源已失效时不必再排队一次注定失败的解码，那只会占住渲染队列，
-        // 让真正可读的照片排在后面。
-        guard let request, catalog.isSourceReachable(for: asset) else {
+        guard let request else {
             thumbnailState = .idle
             return
         }
+        // 来源离线时仍然要加载：派生图存在 Application Support 里，正是为了
+        // 让卷退出后照片依然看得见。只是不去碰那个注定读不到的原文件。
+        let isReachable = catalog.isSourceReachable(for: asset)
         if let cachedImage = thumbnails.image(for: request) {
             thumbnailState = .loaded(cachedImage)
             return
         }
         thumbnailState = .loading
-        thumbnailToken = thumbnails.load(request) { image in
+        thumbnailToken = thumbnails.load(request, allowsRendering: isReachable) { image in
             thumbnailState = ThumbnailViewState.completed(with: image)
             thumbnailToken = nil
         }
@@ -2136,6 +2147,9 @@ private struct CatalogAssetCell: View {
 private struct FolderSourceList: View {
     @EnvironmentObject private var catalog: CatalogStore
     @State private var sourcePendingRemoval: PhotoSource?
+    /// 每个来源的派生图占用。取消总量预算后，这是用户掌握磁盘占用的唯一途径，
+    /// 因此必须显式摊开，而不是让它在后台悄悄增长。
+    @State private var cacheBytesBySourceID: [UUID: Int64] = [:]
 
     var body: some View {
         Group {
@@ -2166,6 +2180,10 @@ private struct FolderSourceList: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 3) {
                             Text(source.status.title)
+                            if let bytes = cacheBytesBySourceID[source.id], bytes > 0 {
+                                Text("离线缓存 " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
+                                    .monospacedDigit()
+                            }
                             if source.status == .scanning {
                                 // 扫描一个大文件夹可能持续数分钟；必须显示真实的
                                 // 已扫描 / 总数，否则界面看起来像卡死。
@@ -2209,6 +2227,9 @@ private struct FolderSourceList: View {
                 .listStyle(.inset)
             }
         }
+        .task(id: catalog.sources.map(\.id)) {
+            await refreshCacheSizes()
+        }
         // 移除是不可撤销的：评分、标记与调整配方会随索引一起消失，
         // 且重新添加同一文件夹也找不回来（资产会拿到新的 ID）。必须明确确认。
         .confirmationDialog(
@@ -2228,9 +2249,24 @@ private struct FolderSourceList: View {
         } message: { source in
             Text(
                 "将从图库移除 \(source.assetCount) 张照片的索引，"
-                + "包括它们的评分、标记与调整配方。原始文件不会被删除或修改。此操作无法撤销。"
+                + "包括它们的评分、标记与调整配方，以及 "
+                + ByteCountFormatter.string(
+                    fromByteCount: cacheBytesBySourceID[source.id] ?? 0,
+                    countStyle: .file
+                )
+                + " 离线缓存。原始文件不会被删除或修改。此操作无法撤销。"
             )
         }
+    }
+
+    /// 目录遍历放在后台：来源多、缓存文件多时它不该卡住列表。
+    private func refreshCacheSizes() async {
+        let cache = catalog.derivedImageCache
+        let sourceIDs = catalog.sources.map(\.id)
+        let sizes = await Task.detached(priority: .utility) {
+            Dictionary(uniqueKeysWithValues: sourceIDs.map { ($0, cache.byteSize(for: $0)) })
+        }.value
+        cacheBytesBySourceID = sizes
     }
 }
 

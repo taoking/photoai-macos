@@ -25,14 +25,20 @@ final class CatalogStore: ObservableObject {
 
     private let persistence: CatalogPersistence
     private let writer: CatalogWriter
+    /// 派生图磁盘层。移除来源时要连同它的缓存目录一起清掉。
+    let derivedImageCache: DerivedImageCache
     private var scanTasks: [UUID: Task<Void, Never>] = [:]
     /// 待写入的最新快照。写入进行中时只替换它，不排队重复写整份 Catalog。
     private var pendingSnapshot: CatalogSnapshot?
     private var persistTask: Task<Void, Never>?
 
-    init(storageURL: URL = CatalogPersistence.defaultFileURL) {
+    init(
+        storageURL: URL = CatalogPersistence.defaultFileURL,
+        derivedImageCache: DerivedImageCache = DerivedImageCache()
+    ) {
         persistence = CatalogPersistence(fileURL: storageURL)
         writer = CatalogWriter(persistence: persistence)
+        self.derivedImageCache = derivedImageCache
 
         do {
             let snapshot = try persistence.load()
@@ -50,9 +56,14 @@ final class CatalogStore: ObservableObject {
         }
     }
 
-    init(snapshot: CatalogSnapshot, storageURL: URL) {
+    init(
+        snapshot: CatalogSnapshot,
+        storageURL: URL,
+        derivedImageCache: DerivedImageCache = DerivedImageCache()
+    ) {
         persistence = CatalogPersistence(fileURL: storageURL)
         writer = CatalogWriter(persistence: persistence)
+        self.derivedImageCache = derivedImageCache
         sources = snapshot.sources
         assets = snapshot.assets.sorted(by: PhotoAsset.isOrderedBefore)
         rebuildAssetIndex()
@@ -185,6 +196,12 @@ final class CatalogStore: ObservableObject {
         }
         rebuildAssetIndex()
         persist()
+
+        // 派生图随索引一起消失：用户已在确认框里同意，留着也再没有东西引用它们。
+        let cache = derivedImageCache
+        Task.detached(priority: .utility) {
+            cache.removeAll(for: sourceID)
+        }
     }
 
     func startRescanAll() {
@@ -291,9 +308,11 @@ final class CatalogStore: ObservableObject {
         return asset(withID: selectionAnchorID)
     }
 
-    func thumbnailRequest(for asset: PhotoAsset) -> ThumbnailRequest? {
+    /// 缩略图与离线预览共用同一个请求：它们读的是同一个文件、走同一次解码。
+    func derivedImageRequest(for asset: PhotoAsset) -> DerivedImageRequest? {
         guard let source = sources.first(where: { $0.id == asset.sourceID }) else { return nil }
-        return ThumbnailRequest(
+        return DerivedImageRequest(
+            sourceID: source.id,
             assetID: asset.id,
             bookmarkData: source.bookmarkData,
             lastKnownRootPath: source.lastKnownPath,
@@ -313,18 +332,6 @@ final class CatalogStore: ObservableObject {
             isRAW: asset.isRAW,
             recipe: recipe(for: asset),
             lut: lut
-        )
-    }
-
-    func previewRequest(for asset: PhotoAsset) -> PhotoPreviewRequest? {
-        guard let source = sources.first(where: { $0.id == asset.sourceID }) else { return nil }
-        return PhotoPreviewRequest(
-            assetID: asset.id,
-            bookmarkData: source.bookmarkData,
-            lastKnownRootPath: source.lastKnownPath,
-            relativePath: asset.relativePath,
-            modificationDate: asset.modifiedAt,
-            mediaType: asset.mediaType
         )
     }
 
