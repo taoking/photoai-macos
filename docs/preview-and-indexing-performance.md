@@ -408,3 +408,116 @@ App 在扫描途中被退出，而扫描期的持久化把这个**运行时瞬�
 | 双击进入预览的真机手感 | **NOT RUN** | 单击/双击与既有 shift、command 多选的组合需人工确认 |
 | 真机重新定位一个 missing 来源 | **NOT RUN** | 自动化已覆盖逻辑；真实盘符变化场景待确认 |
 | 退出时的 `.terminateLater` 真机行为 | **NOT RUN** | 单元测试覆盖了委托逻辑，真实退出路径需人工确认 |
+
+## 7. 需求变更：派生图从"缓存"升级为"索引"
+
+### 7.1 变更内容
+
+第 6 轮之后需求扩展：扫描过的照片，即使外置盘或临时卷退出，预览也要继续显示；
+卷再次接回时又要对应回原文件。也就是说这个应用不只做预览，还要做**索引**。
+
+这条需求改变了派生图的性质——它不再是"随时可丢弃的派生数据"，而是**卷离线期间
+那些照片在本机的唯一表示**。据此调整了三条既有决策：
+
+| 原决策 | 调整后 | 原因 |
+| --- | --- | --- |
+| 存 `~/Library/Caches/` | 存 `~/Library/Application Support/` | Caches 会被系统在磁盘压力下清除，且默认不进 Time Machine |
+| 总量预算 + LRU 淘汰 | 取消，改为按来源显示占用、移除时清理 | LRU 会优先删掉长期离线的卷——恰恰是**无法重建**的那些 |
+| 文件名含修改时间 | 只用 `assetID` | 外置盘/exFAT 重新接回时时间戳可能漂移，会让整卷缓存落空并留下孤儿文件 |
+
+同时目标平台明确为**内置磁盘与外置 SSD**，MTP 降级为"能用但不为它优化"。
+
+### 7.2 关键实测：一次解码可产出所有级别
+
+n=6，真实照片，解出最大一级后在内存内缩放出其余级别：
+
+| 原文件 | 解码得到 | 480 | 1280 | 1600 | 2400 |
+| --- | --- | --- | --- | --- | --- |
+| ARW | **1616×1080**（内嵌预览） | 56 KB | 290 KB | 409 KB | 405 KB |
+| JPG | 2400×1600（全解码） | 56 KB | 301 KB | 432 KB | 851 KB |
+
+ARW 请求 2400 实际只有 1616，**2400 这一级对 RAW 毫无意义**。
+
+| 尺寸 | 单张均值 | 5 万张 |
+| --- | --- | --- |
+| 480 px | 52.4 KB | 2.50 GB |
+| 1280 px | 273.3 KB | 13.03 GB |
+| **1600 px** | **389.9 KB** | **18.59 GB** |
+| 2400 px | 585.2 KB | 27.90 GB |
+
+**结论：昂贵的是读文件加解码，不是编码。** 增加一个级别的代价是磁盘空间，不是时间。
+这推翻了"大图预览要单独排队、优先级最低"的前提——它可以和缩略图在同一次解码里免费产出。
+
+选定 1600 作为离线预览级别：它恰好对齐 Sony ARW 内嵌预览的原生尺寸，对 RAW 零损失；
+2400 要多花 9.3 GB 却只对 JPEG 原图有意义。
+
+### 7.3 空间预算（每万张，含 480 缩略图）
+
+| 离线预览档位 | 占用 | 5 万张 |
+| --- | --- | --- |
+| 关闭 | 0.5 GB | 2.5 GB |
+| 1280 | 3.1 GB | 15.5 GB |
+| **1600（默认）** | **4.2 GB** | **21.1 GB** |
+| 2400 | 6.1 GB | 30.4 GB |
+
+### 7.4 A 阶段：存储结构
+
+```text
+~/Library/Application Support/PhotoAI-Mac/Derived/
+    <sourceID>/thumbnails/<assetID>.jpg    480 px
+    <sourceID>/previews/<assetID>.jpg     1600 px
+```
+
+- `ThumbnailRequest` 与 `PhotoPreviewRequest` 合并为 `DerivedImageRequest`——
+  它们描述同一个文件、走同一次解码，分成两个类型只会误导后来的人。
+- 加载新增 `allowsRendering`：来源离线时只读缓存，不去碰读不到的原文件。
+- 有缓存的离线照片正常显示并带"离线"角标；`未缓存 · 来源离线` 才是占位图。
+- 启动时回收 Caches 下的旧布局。
+
+### 7.5 B 阶段：全卷预热与三级回退
+
+- 扫描完成自动把整卷排进后台预热，两级在同一次解码里产出。
+- **已有缓存直接跳过**，因此天然可续跑：中断、退出、重启、重扫都不重做。
+- 有交互解码在飞时预热主动让路，慢速卷上点开照片不会排在整卷预热后面。
+- 大图预览三级回退：内存预览 → 已有缩略图放大顶上 → 实时解码就绪后替换。
+  **空白页至此在结构上不可能出现**，而不是依赖"够快"。
+
+### 7.6 C 阶段：卷生命周期与设置
+
+- 监听 `NSWorkspace.didMountNotification`：记录路径重新出现的来源自动重扫恢复；
+  换了盘符的仍走"重新定位"。
+- 设置页可选离线预览级别（关 / 1280 / 1600 / 2400），每档标注实测占用。
+- 预热的级别集合改为可注入，避免测试去改 `UserDefaults.standard` 污染真实偏好。
+
+### 7.7 自动化回归
+
+`swift build`、`swift test`（**137 tests / 33 suites**）、`Scripts/build-debug-app.sh`、
+`git diff --check` 均 PASS。
+
+新增测试（节选）：
+
+| 测试 | 覆盖 |
+| --- | --- |
+| `prewarmingGeneratesEveryTierForTheWholeSource` | 整卷两级全部生成 |
+| `photosStayVisibleAfterTheVolumeGoesAway` | **删掉原文件后照片仍可见**——离线索引需求的验收点 |
+| `alreadyCachedAssetsAreCountedWithoutRedoingWork` | 已缓存跳过，续跑不重做 |
+| `derivedImagesAreStoredPerSourceAndSurviveTheOriginal` | 按来源分目录落盘 |
+| `offlineSourcesReadFromCacheWithoutTouchingTheOriginal` | 离线只读缓存 |
+| `removingASourceDropsItsDerivedImages` | 移除来源清空其派生图 |
+| `staleEntriesAreIgnoredWhenTheOriginalIsNewer` | 原文件更新后缓存判为过期 |
+| `remountedSourcesRecoverAndUntouchedOnesStayMissing` | 接回的卷自动恢复，没接回的保持 missing |
+| `onlyThumbnailsArePrewarmedWhenOfflinePreviewIsDisabled` | 关闭离线预览时只产出缩略图 |
+
+顺带修复的测试卫生问题：`ThumbnailStore()` 的默认缓存路径改到真实 Application Support 后，
+有 4 处测试会写进用户真实数据，已全部改为注入临时目录。
+
+### 7.8 验证状态
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 固态盘照片导入 | **PASS** | 用户实机反馈：已导入固态盘照片，效果良好 |
+| 卷退出后离线浏览 | **NOT RUN** | 自动化已覆盖（删除原文件后仍可见）；真实拔盘场景待确认 |
+| 卷接回后自动恢复 | **NOT RUN** | 自动化已覆盖路径恢复逻辑；真实挂载事件待确认 |
+| 5 万张规模的预热耗时与占用 | **NOT RUN** | 本地盘实测单张约 0.04 s，6 路并发下 5 万张估算 10–15 分钟 |
+| 双击进入预览的真机手感 | **NOT RUN** | 与 shift / command 多选的组合待确认 |
+| 退出时 `.terminateLater` 真机行为 | **NOT RUN** | 单元测试覆盖委托逻辑，真实退出路径待确认 |
