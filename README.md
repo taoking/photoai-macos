@@ -23,14 +23,14 @@ open .build/PhotoAI-Mac.app
 
 ## Release 打包
 
-当前版本为 `0.1.0 (1)`。以下命令会执行 Release 配置构建，组装包含应用图标与 SwiftPM 品牌资源的 `.app`，进行 ad-hoc 签名，并在 `dist/` 生成未公证压缩包、SHA-256 和构建信息：
+当前版本为 `0.2.0 (2)`。以下命令会执行 Release 配置构建，组装包含应用图标与 SwiftPM 品牌资源的 `.app`，进行 ad-hoc 签名，并在 `dist/` 生成未公证压缩包、SHA-256 和构建信息：
 
 ```sh
 DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer \
   ./Scripts/create-release-artifacts.sh
 ```
 
-产物不含 Developer ID 签名或 Apple 公证，适合作为本地 Release 候选；通过公网分发前仍需正式签名与公证。脚本不会覆盖已有同名产物，可通过 `PHOTOAI_RELEASE_OUTPUT_DIR` 指定新的输出目录。
+产物不含 Developer ID 签名或 Apple 公证，适合作为本地 Release 候选；通过公网分发前仍需正式签名与公证。同名产物已存在时脚本会直接中止（`zip` 对已有压缩包是追加合并而非替换，继续执行会把上一次构建的文件悄悄混进新包）。请提升版本号、删除旧产物，或通过 `PHOTOAI_RELEASE_OUTPUT_DIR` 指定新的输出目录。
 
 ## 品牌资源
 

@@ -72,6 +72,14 @@ if [[ ! -f "$app_path/Contents/Resources/PhotoAI-Mac.icns" ]] || \
     exit 1
 fi
 
+# zip 对已存在的压缩包是追加合并而不是替换：直接跑会把上一次构建的文件混进新包，
+# 而且不会有任何提示。宁可停下来让人显式处理，也不要发出一个夹带旧二进制的产物。
+if [[ -e "$output_directory/$artifact_name" ]] || [[ -e "$output_directory/$checksum_name" ]]; then
+    print -u2 "Release artifacts for $version already exist in $output_directory."
+    print -u2 "Bump CFBundleShortVersionString, remove them, or set PHOTOAI_RELEASE_OUTPUT_DIR."
+    exit 1
+fi
+
 (
     cd "$temporary_root"
     COPYFILE_DISABLE=1 /usr/bin/zip -X -q -r "$output_directory/$artifact_name" "PhotoAI-Mac.app"
