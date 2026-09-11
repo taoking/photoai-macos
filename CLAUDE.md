@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Toolchain
 
-The package declares `swift-tools-version: 6.4` and `platforms: [.macOS(.v27)]`, which the default
-system Xcode (26.x / Swift 6.3) cannot even parse. Every `swift`/`xcodebuild` invocation must point
-at the Xcode 27 beta:
+The package declares `swift-tools-version: 6.4` and `platforms: [.macOS(.v27)]`. Xcode 27 is now the
+released, default toolchain at `/Applications/Xcode.app`, so plain `swift build` / `swift test` work
+and **no `DEVELOPER_DIR` override is needed**.
 
-```sh
-export DEVELOPER_DIR=/Users/tao/Downloads/Xcode-beta.app/Contents/Developer   # local beta path
-```
-
-Without it you get `package is using Swift tools version 6.4.0 but the installed version is 6.3.3`.
+Historical note, in case you see it in older docs or commits: this project previously required
+`export DEVELOPER_DIR=.../Xcode-beta.app/Contents/Developer`, because the then-current Xcode 26
+(Swift 6.3) could not even parse the manifest (`package is using Swift tools version 6.4.0 but the
+installed version is 6.3.3`). If `swift build` ever fails that way again, the active Xcode is too
+old rather than the package being wrong.
 
 ## Commands
 
 ```sh
 swift build
-swift test                                   # Swift Testing, ~90 tests / 17 suites
+swift test                                   # Swift Testing, ~166 tests / 43 suites
 swift test --filter CatalogTests             # one suite
 swift test --filter ratingShortcutTest       # one test
 swift run PhotoAIMac

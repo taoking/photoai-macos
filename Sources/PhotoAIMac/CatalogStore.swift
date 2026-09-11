@@ -16,6 +16,9 @@ final class CatalogStore: ObservableObject {
     @Published private(set) var dateBucket: DateBucket?
     /// 图库排序。与筛选一样参与查询缓存键。
     @Published private(set) var sortOrder: LibrarySortOrder = .captureDateDescending
+    @Published private(set) var collections: [PhotoCollection] = []
+    /// 当前正在查看的选片集。`selection == .collection` 时决定图库显示哪一个。
+    @Published private(set) var selectedCollectionID: UUID?
     @Published private(set) var searchQuery = ""
     @Published private(set) var searchInterpretation = SearchInterpretation.empty
     @Published private(set) var isInterpretingSearch = false
@@ -25,6 +28,8 @@ final class CatalogStore: ObservableObject {
     private var queryCache: [CatalogQueryKey: [PhotoAsset]] = [:]
     private var duplicateAssetIDsCache: Set<UUID>?
     private var dateSectionsCache: (sections: [DateSection], undatedCount: Int)?
+    /// 选片集成员。放在内存里按 ID 取，避免每次重绘都查库。
+    private var collectionMembers: [UUID: Set<UUID>] = [:]
     private var assetIndexByID: [UUID: Int] = [:]
     private var metadataUndoStack: [CatalogMetadataUndoOperation] = []
     private(set) var queryComputationCount = 0
@@ -53,17 +58,24 @@ final class CatalogStore: ObservableObject {
         var openedDatabase: CatalogDatabase?
         var failure: Error?
         var loaded = CatalogSnapshot.empty
+        var loadedCollections: [PhotoCollection] = []
+        var loadedMembers: [UUID: Set<UUID>] = [:]
         do {
             // 首次运行会把既有的 catalog.json 迁进数据库，并把原文件留作备份。
             let database = try CatalogMigration.openDatabase(legacyJSONURL: storageURL)
             openedDatabase = database
             loaded = try database.loadSnapshot()
+            let stored = try database.loadCollections()
+            loadedCollections = stored.collections
+            loadedMembers = stored.members
         } catch {
             failure = error
         }
 
         database = openedDatabase
         databaseError = failure
+        collections = loadedCollections
+        collectionMembers = loadedMembers
         sources = loaded.sources
         // 必须在这里重新排序，不能沿用存储里的顺序。排序规则会随版本变化，
         // 而磁盘上的记录是用写它时的旧规则排好的；若直接采用，新规则要等到
@@ -209,6 +221,9 @@ final class CatalogStore: ObservableObject {
         scanProgress[sourceID] = nil
 
         let removedAssetIDs = Set(assets.lazy.filter { $0.sourceID == sourceID }.map(\.id))
+        for collectionID in collectionMembers.keys {
+            collectionMembers[collectionID]?.subtract(removedAssetIDs)
+        }
         sources.removeAll { $0.id == sourceID }
         assets.removeAll { $0.sourceID == sourceID }
         selectedAssetIDs.subtract(removedAssetIDs)
@@ -250,7 +265,8 @@ final class CatalogStore: ObservableObject {
             destination: destination,
             filter: selectedFilter,
             dateBucket: dateBucket,
-            sortOrder: sortOrder
+            sortOrder: sortOrder,
+            collectionID: selectedCollectionID
         )
         if let cachedAssets = queryCache[cacheKey] {
             return cachedAssets
@@ -260,6 +276,10 @@ final class CatalogStore: ObservableObject {
         switch destination {
         case .allPhotos, .recentImports, .folders, .people, .cleanup:
             destinationAssets = assets
+        case .collection:
+            // 成员按图库当前顺序展示，而不是加入顺序：翻看时和别处一致。
+            let members = selectedCollectionID.flatMap { collectionMembers[$0] } ?? []
+            destinationAssets = assets.filter { members.contains($0.id) }
         case .applePhotos:
             destinationAssets = []
         case .search:
@@ -461,6 +481,69 @@ final class CatalogStore: ObservableObject {
         invalidateQueryCache()
     }
 
+    // MARK: - 选片集
+
+    func assetCount(in collectionID: UUID) -> Int {
+        collectionMembers[collectionID]?.count ?? 0
+    }
+
+    func selectCollection(_ collectionID: UUID?) {
+        guard selectedCollectionID != collectionID else { return }
+        selectedCollectionID = collectionID
+        invalidateQueryCache()
+        clearSelection()
+    }
+
+    @discardableResult
+    func createCollection(named rawName: String) -> PhotoCollection? {
+        guard let name = PhotoCollection.normalizedName(rawName) else { return nil }
+        let collection = PhotoCollection(name: name)
+        collections.append(collection)
+        collections.sort(by: PhotoCollection.isOrderedBefore)
+        enqueue(.upsertCollection(collection))
+        return collection
+    }
+
+    func renameCollection(_ collectionID: UUID, to rawName: String) {
+        guard let name = PhotoCollection.normalizedName(rawName),
+              let index = collections.firstIndex(where: { $0.id == collectionID }) else {
+            return
+        }
+        collections[index].name = name
+        let renamed = collections[index]
+        collections.sort(by: PhotoCollection.isOrderedBefore)
+        enqueue(.upsertCollection(renamed))
+    }
+
+    /// 删除选片集只断开关系，照片与原文件都不受影响。
+    func deleteCollection(_ collectionID: UUID) {
+        guard collections.contains(where: { $0.id == collectionID }) else { return }
+        collections.removeAll { $0.id == collectionID }
+        collectionMembers[collectionID] = nil
+        if selectedCollectionID == collectionID { selectedCollectionID = nil }
+        enqueue(.deleteCollection(collectionID))
+    }
+
+    /// 把一批照片加入选片集。重复加入是无操作，因此可以分多次累积选择。
+    func addAssets(_ assetIDs: Set<UUID>, to collectionID: UUID) {
+        guard collections.contains(where: { $0.id == collectionID }) else { return }
+        let valid = assetIDs.filter { assetIndexByID[$0] != nil }
+        guard !valid.isEmpty else { return }
+        let added = valid.subtracting(collectionMembers[collectionID] ?? [])
+        guard !added.isEmpty else { return }
+        collectionMembers[collectionID, default: []].formUnion(added)
+        enqueue(.addCollectionMembers(added, collectionID, .now))
+    }
+
+    func removeAssets(_ assetIDs: Set<UUID>, from collectionID: UUID) {
+        guard let existing = collectionMembers[collectionID] else { return }
+        let removed = existing.intersection(assetIDs)
+        guard !removed.isEmpty else { return }
+        collectionMembers[collectionID] = existing.subtracting(removed)
+        selectedAssetIDs.subtract(removed)
+        enqueue(.removeCollectionMembers(removed, collectionID))
+    }
+
     func setDateBucket(_ bucket: DateBucket?) {
         guard dateBucket != bucket else { return }
         dateBucket = bucket
@@ -656,6 +739,9 @@ final class CatalogStore: ObservableObject {
         }
         for index in sources.indices {
             sources[index].assetCount = assets.filter { $0.sourceID == sources[index].id }.count
+        }
+        for collectionID in collectionMembers.keys {
+            collectionMembers[collectionID]?.subtract(assetIDs)
         }
         enqueue(.deleteAssets(assetIDs))
         persistAllSources()
@@ -1000,6 +1086,7 @@ private struct CatalogQueryKey: Hashable {
     let filter: LibraryFilter
     let dateBucket: DateBucket?
     let sortOrder: LibrarySortOrder
+    let collectionID: UUID?
 }
 
 private struct DuplicateIndexKey: Hashable {

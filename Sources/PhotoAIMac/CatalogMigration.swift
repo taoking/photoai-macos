@@ -10,6 +10,10 @@ enum CatalogWrite: Sendable {
     case replaceAssets([PhotoAsset], UUID)
     case updateAssets([PhotoAsset])
     case deleteAssets(Set<UUID>)
+    case upsertCollection(PhotoCollection)
+    case deleteCollection(UUID)
+    case addCollectionMembers(Set<UUID>, UUID, Date)
+    case removeCollectionMembers(Set<UUID>, UUID)
 
     func apply(to database: CatalogDatabase) throws {
         switch self {
@@ -23,6 +27,14 @@ enum CatalogWrite: Sendable {
             try database.updateAssetMetadata(assets)
         case let .deleteAssets(ids):
             try database.deleteAssets(ids: ids)
+        case let .upsertCollection(collection):
+            try database.upsertCollection(collection)
+        case let .deleteCollection(id):
+            try database.deleteCollection(id: id)
+        case let .addCollectionMembers(assetIDs, collectionID, date):
+            try database.addCollectionMembers(assetIDs, to: collectionID, at: date)
+        case let .removeCollectionMembers(assetIDs, collectionID):
+            try database.removeCollectionMembers(assetIDs, from: collectionID)
         }
     }
 }

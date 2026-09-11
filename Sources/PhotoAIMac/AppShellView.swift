@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct AppShellView: View {
+    @State private var isCreatingCollectionFromSelection = false
+    @State private var newCollectionNameFromSelection = ""
     @EnvironmentObject private var shell: AppShellModel
     @EnvironmentObject private var catalog: CatalogStore
     @EnvironmentObject private var luts: LUTStore
@@ -66,6 +68,19 @@ struct AppShellView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .alert("新建选片集", isPresented: $isCreatingCollectionFromSelection) {
+            TextField("名称", text: $newCollectionNameFromSelection)
+            Button("创建并加入") {
+                if let created = catalog.createCollection(named: newCollectionNameFromSelection) {
+                    catalog.addAssets(catalog.selectedAssetIDs, to: created.id)
+                    shell.announce(
+                        "已新建「\(created.name)」并加入 \(catalog.selectedAssetIDs.count) 张照片。"
+                    )
+                }
+                newCollectionNameFromSelection = ""
+            }
+            Button("取消", role: .cancel) { newCollectionNameFromSelection = "" }
+        }
         .onChange(of: shell.selection) { _, _ in
             // 侧边栏在编辑时仍然可见；把它当成返回图库的明确导航操作，不能留下
             // 一个盖住新目标页的编辑器。工具栏/快捷键通过 AppShellModel.select(_:) 时
@@ -191,6 +206,34 @@ struct AppShellView: View {
                         }
                     }
                     .disabled(catalog.selectedAssetIDs.isEmpty)
+
+                    Menu("添加到选片集") {
+                        // 照片多到一次框选不完时，分多次把选中的照片累积到同一处。
+                        // 重复加入是无操作，所以可以放心反复选。
+                        ForEach(catalog.collections) { collection in
+                            Button("\(collection.name)（\(catalog.assetCount(in: collection.id))）") {
+                                catalog.addAssets(catalog.selectedAssetIDs, to: collection.id)
+                                shell.announce(
+                                    "已将 \(catalog.selectedAssetIDs.count) 张照片加入「\(collection.name)」。"
+                                )
+                            }
+                        }
+                        if !catalog.collections.isEmpty { Divider() }
+                        Button("新建选片集…") { isCreatingCollectionFromSelection = true }
+                    }
+                    .disabled(catalog.selectedAssetIDs.isEmpty)
+
+                    if shell.selection == .collection,
+                       let collectionID = catalog.selectedCollectionID {
+                        Button("从选片集移除") {
+                            let count = catalog.selectedAssetIDs.count
+                            catalog.removeAssets(catalog.selectedAssetIDs, from: collectionID)
+                            shell.announce("已从选片集移除 \(count) 张照片；照片与原文件不受影响。")
+                        }
+                        .disabled(catalog.selectedAssetIDs.isEmpty)
+                    }
+
+                    Divider()
 
                     Button("标记为 Pick") { catalog.setFlag(.pick) }
                         .disabled(catalog.selectedAssetIDs.isEmpty)
@@ -352,6 +395,11 @@ private struct SidebarView: View {
     @State private var expandedYears: Set<Int> = []
     @State private var expandedMonths: Set<Int> = []
     @State private var hasExpandedLatestOnce = false
+    @State private var isCreatingCollection = false
+    @State private var newCollectionName = ""
+    @State private var renamingCollection: PhotoCollection?
+    @State private var renamedCollectionName = ""
+    @State private var deletingCollection: PhotoCollection?
 
     var body: some View {
         List(selection: $selection) {
@@ -375,7 +423,7 @@ private struct SidebarView: View {
 
             ForEach(SidebarGroup.allCases) { group in
                 Section(group.title) {
-                    ForEach(SidebarDestination.allCases.filter { $0.group == group }) { destination in
+                    ForEach(SidebarDestination.navigable.filter { $0.group == group }) { destination in
                         Button {
                             selection = destination
                         } label: {
@@ -391,11 +439,103 @@ private struct SidebarView: View {
                 }
             }
 
+            collectionSection
             dateSection
         }
         .navigationTitle("PhotoAI Mac")
         .listStyle(.sidebar)
         .onAppear(perform: expandLatestYearOnce)
+        .alert("新建选片集", isPresented: $isCreatingCollection) {
+            TextField("名称", text: $newCollectionName)
+            Button("创建") {
+                if let created = catalog.createCollection(named: newCollectionName) {
+                    catalog.selectCollection(created.id)
+                    selection = .collection
+                }
+                newCollectionName = ""
+            }
+            Button("取消", role: .cancel) { newCollectionName = "" }
+        } message: {
+            Text("选片集只收集引用，不会复制或移动任何原始文件。")
+        }
+        .alert("重命名选片集", isPresented: Binding(
+            get: { renamingCollection != nil },
+            set: { if !$0 { renamingCollection = nil } }
+        )) {
+            TextField("名称", text: $renamedCollectionName)
+            Button("保存") {
+                if let renamingCollection {
+                    catalog.renameCollection(renamingCollection.id, to: renamedCollectionName)
+                }
+                renamingCollection = nil
+            }
+            Button("取消", role: .cancel) { renamingCollection = nil }
+        }
+        .onChange(of: renamingCollection) { _, collection in
+            renamedCollectionName = collection?.name ?? ""
+        }
+        .confirmationDialog(
+            "删除选片集「\(deletingCollection?.name ?? "")」？",
+            isPresented: Binding(
+                get: { deletingCollection != nil },
+                set: { if !$0 { deletingCollection = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: deletingCollection
+        ) { collection in
+            Button("删除选片集", role: .destructive) {
+                catalog.deleteCollection(collection.id)
+                if selection == .collection { selection = .allPhotos }
+                deletingCollection = nil
+            }
+            Button("取消", role: .cancel) { deletingCollection = nil }
+        } message: { collection in
+            Text(
+                "将删除这个选片集及其 \(catalog.assetCount(in: collection.id)) 条收录记录。"
+                + "照片本身、评分标记与原始文件都不受影响。"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var collectionSection: some View {
+        Section("选片集") {
+            ForEach(catalog.collections) { collection in
+                let isActive = selection == .collection && catalog.selectedCollectionID == collection.id
+                Button {
+                    catalog.selectCollection(collection.id)
+                    selection = .collection
+                } label: {
+                    HStack {
+                        Label(collection.name, systemImage: "checklist")
+                        Spacer()
+                        Text("\(catalog.assetCount(in: collection.id))")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .fontWeight(isActive ? .semibold : .regular)
+                .foregroundStyle(isActive ? Color.accentColor : .primary)
+                .accessibilityAddTraits(isActive ? .isSelected : [])
+                .contextMenu {
+                    Button("重命名…") { renamingCollection = collection }
+                    Button("删除选片集", role: .destructive) { deletingCollection = collection }
+                }
+            }
+
+            Button {
+                isCreatingCollection = true
+            } label: {
+                Label("新建选片集…", systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     /// 「按日期」是筛选而不是目的地：它与当前所在的页面正交，
@@ -577,8 +717,13 @@ private struct LibraryPlaceholderView: View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(shell.selection.title)
-                        .font(.title2.bold())
+                    Text(
+                        shell.selection == .collection
+                            ? (catalog.collections.first { $0.id == catalog.selectedCollectionID }?.name
+                                ?? shell.selection.title)
+                            : shell.selection.title
+                    )
+                    .font(.title2.bold())
                     Text(description)
                         .foregroundStyle(.secondary)
                 }

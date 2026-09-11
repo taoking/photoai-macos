@@ -182,8 +182,12 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     case unrated
     case picks
     case rejected
-    case fourStarsAndAbove
+    case oneStar
+    case twoStars
+    case threeStars
+    case fourStars
     case fiveStars
+    case fourStarsAndAbove
     case raw
     case videos
     case duplicates
@@ -198,8 +202,12 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
         case .unrated: "未评分"
         case .picks: "Pick"
         case .rejected: "Reject"
-        case .fourStarsAndAbove: "4 星及以上"
+        case .oneStar: "1 星"
+        case .twoStars: "2 星"
+        case .threeStars: "3 星"
+        case .fourStars: "4 星"
         case .fiveStars: "5 星"
+        case .fourStarsAndAbove: "4 星及以上"
         case .raw: "RAW"
         case .videos: "视频"
         case .duplicates: "重复照片"
@@ -214,8 +222,13 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
         case .unrated: asset.rating == 0
         case .picks: asset.flag == .pick
         case .rejected: asset.flag == .reject
-        case .fourStarsAndAbove: asset.rating >= 4
+        // 单个星级是"恰好 N 星"；"4 星及以上"是另一种用途，两者都保留。
+        case .oneStar: asset.rating == 1
+        case .twoStars: asset.rating == 2
+        case .threeStars: asset.rating == 3
+        case .fourStars: asset.rating == 4
         case .fiveStars: asset.rating == 5
+        case .fourStarsAndAbove: asset.rating >= 4
         case .raw: asset.isRAW
         case .videos: asset.mediaType == .video
         case .duplicates: duplicateAssetIDs.contains(asset.id)
@@ -292,27 +305,38 @@ struct CatalogSnapshot: Codable, Sendable {
 /// 不同时期的照片交错**，因此拍摄时间是更可靠的默认。
 enum LibrarySortOrder: String, CaseIterable, Identifiable, Sendable {
     case captureDateDescending
+    case captureDateAscending
     case filenameDescending
+    case filenameAscending
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .captureDateDescending: "拍摄时间（新→旧）"
+        case .captureDateAscending: "拍摄时间（旧→新）"
         case .filenameDescending: "文件名（Z→A）"
+        case .filenameAscending: "文件名（A→Z）"
         }
+    }
+
+    private var isAscending: Bool {
+        self == .captureDateAscending || self == .filenameAscending
     }
 
     func isOrderedBefore(_ lhs: PhotoAsset, _ rhs: PhotoAsset) -> Bool {
         switch self {
-        case .filenameDescending:
-            return PhotoAsset.isOrderedBefore(lhs, rhs)
-        case .captureDateDescending:
-            // 没有拍摄时间的排在最后，再按文件名保证顺序稳定。
+        case .filenameDescending, .filenameAscending:
+            return isAscending
+                ? PhotoAsset.isOrderedBefore(rhs, lhs)
+                : PhotoAsset.isOrderedBefore(lhs, rhs)
+        case .captureDateDescending, .captureDateAscending:
             switch (lhs.captureDate, rhs.captureDate) {
             case let (left?, right?):
-                if left != right { return left > right }
+                if left != right { return isAscending ? left < right : left > right }
                 return PhotoAsset.isOrderedBefore(lhs, rhs)
+            // 无论正序倒序，没有拍摄时间的一律排在最后：它们不属于时间序列，
+            // 混进去只会让"最早的一张"变成一张没有日期的照片。
             case (nil, _?):
                 return false
             case (_?, nil):

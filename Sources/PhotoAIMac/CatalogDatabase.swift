@@ -85,6 +85,93 @@ final class CatalogDatabase: @unchecked Sendable {
         return snapshot
     }
 
+    /// 选片集及其成员。与 `CatalogSnapshot` 分开加载，这样旧 JSON 的迁移路径不必知道它。
+    func loadCollections() throws -> (collections: [PhotoCollection], members: [UUID: Set<UUID>]) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var collections: [PhotoCollection] = []
+        try query("SELECT id, name, created_at FROM collections;") { statement in
+            guard let id = UUID(uuidString: Self.text(statement, 0) ?? "") else { return }
+            collections.append(
+                PhotoCollection(
+                    id: id,
+                    name: Self.text(statement, 1) ?? "",
+                    createdAt: Self.date(statement, 2) ?? .now
+                )
+            )
+        }
+
+        var members: [UUID: Set<UUID>] = [:]
+        try query("SELECT collection_id, asset_id FROM collection_members;") { statement in
+            guard let collectionID = UUID(uuidString: Self.text(statement, 0) ?? ""),
+                  let assetID = UUID(uuidString: Self.text(statement, 1) ?? "") else {
+                return
+            }
+            members[collectionID, default: []].insert(assetID)
+        }
+
+        return (collections.sorted(by: PhotoCollection.isOrderedBefore), members)
+    }
+
+    func upsertCollection(_ collection: PhotoCollection) throws {
+        try inTransaction {
+            let statement = try prepare("""
+                INSERT INTO collections (id, name, created_at) VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET name = excluded.name;
+                """)
+            defer { sqlite3_finalize(statement) }
+            Self.bind(statement, 1, collection.id.uuidString)
+            Self.bind(statement, 2, collection.name)
+            Self.bind(statement, 3, collection.createdAt)
+            try step(statement)
+        }
+    }
+
+    func deleteCollection(id: UUID) throws {
+        try inTransaction {
+            let statement = try prepare("DELETE FROM collections WHERE id = ?;")
+            defer { sqlite3_finalize(statement) }
+            Self.bind(statement, 1, id.uuidString)
+            try step(statement)
+        }
+    }
+
+    func addCollectionMembers(_ assetIDs: Set<UUID>, to collectionID: UUID, at date: Date) throws {
+        guard !assetIDs.isEmpty else { return }
+        try inTransaction {
+            let statement = try prepare("""
+                INSERT INTO collection_members (collection_id, asset_id, added_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(collection_id, asset_id) DO NOTHING;
+                """)
+            defer { sqlite3_finalize(statement) }
+            for assetID in assetIDs {
+                sqlite3_reset(statement)
+                Self.bind(statement, 1, collectionID.uuidString)
+                Self.bind(statement, 2, assetID.uuidString)
+                Self.bind(statement, 3, date)
+                try step(statement)
+            }
+        }
+    }
+
+    func removeCollectionMembers(_ assetIDs: Set<UUID>, from collectionID: UUID) throws {
+        guard !assetIDs.isEmpty else { return }
+        try inTransaction {
+            let statement = try prepare(
+                "DELETE FROM collection_members WHERE collection_id = ? AND asset_id = ?;"
+            )
+            defer { sqlite3_finalize(statement) }
+            for assetID in assetIDs {
+                sqlite3_reset(statement)
+                Self.bind(statement, 1, collectionID.uuidString)
+                Self.bind(statement, 2, assetID.uuidString)
+                try step(statement)
+            }
+        }
+    }
+
     var isEmpty: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -219,6 +306,23 @@ final class CatalogDatabase: @unchecked Sendable {
                 UNIQUE(source_id, relative_path)
             );
             """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS collections (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            """)
+        // 成员关系是纯引用：删选片集或删照片都只断开关系，两侧的实体各自独立。
+        try execute("""
+            CREATE TABLE IF NOT EXISTS collection_members (
+                collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                added_at REAL NOT NULL,
+                PRIMARY KEY (collection_id, asset_id)
+            );
+            """)
+        try execute("CREATE INDEX IF NOT EXISTS members_by_asset ON collection_members(asset_id);")
         // 资产身份是 source_id + relative_path，重扫时按它复用既有 ID。
         try execute("CREATE INDEX IF NOT EXISTS assets_by_source ON assets(source_id);")
         // 老库补列。SQLite 没有 IF NOT EXISTS，重复执行会报错，忽略即可。

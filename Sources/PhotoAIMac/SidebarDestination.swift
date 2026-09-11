@@ -12,8 +12,15 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case people
     case search
     case cleanup
+    /// 具体是哪一个选片集由 `CatalogStore.selectedCollectionID` 决定。
+    case collection
 
     var id: String { rawValue }
+
+    /// 侧边栏固定分组里列出的目的地。选片集有自己的一节且是动态的，不在此列。
+    static var navigable: [SidebarDestination] {
+        allCases.filter { $0 != .collection }
+    }
 
     var title: String {
         switch self {
@@ -28,6 +35,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .people: "人物"
         case .search: "搜索"
         case .cleanup: "清理"
+        case .collection: "选片集"
         }
     }
 
@@ -44,6 +52,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .people: "person.2"
         case .search: "magnifyingglass"
         case .cleanup: "sparkles"
+        case .collection: "checklist"
         }
     }
 
@@ -53,7 +62,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
             .library
         case .folders, .applePhotos:
             .collections
-        case .people, .search, .cleanup:
+        case .people, .search, .cleanup, .collection:
             .tools
         }
     }
