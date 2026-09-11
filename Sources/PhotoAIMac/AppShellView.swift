@@ -440,6 +440,7 @@ private struct SidebarView: View {
             }
 
             collectionSection
+            folderSection
             dateSection
         }
         .navigationTitle("PhotoAI Mac")
@@ -535,6 +536,58 @@ private struct SidebarView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    /// 「按文件夹」与「按日期」一样是筛选而不是目的地：两者可叠加，
+    /// 再配合星级筛选，就能把"某个文件夹里打了几星的照片"一次筛出来。
+    /// 注意与「文件夹」那个目的地区分：那里是管理来源（重扫、重新定位、移除）。
+    @ViewBuilder
+    private var folderSection: some View {
+        let sections = catalog.folderSections()
+        if !sections.isEmpty {
+            Section("按文件夹") {
+                if catalog.folderFilter != nil {
+                    Button {
+                        catalog.setFolderFilter(nil)
+                    } label: {
+                        Label("全部文件夹", systemImage: "xmark.circle")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ForEach(sections) { section in
+                    Text(section.sourceName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(section.folders) { entry in
+                        let isSelected = catalog.folderFilter == entry.filter
+                        Button {
+                            catalog.setFolderFilter(isSelected ? nil : entry.filter)
+                        } label: {
+                            HStack {
+                                Text(entry.title)
+                                    .lineLimit(1)
+                                    .truncationMode(.head)
+                                Spacer()
+                                Text("\(entry.count)")
+                                    .font(.caption)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .fontWeight(isSelected ? .semibold : .regular)
+                        .foregroundStyle(isSelected ? Color.accentColor : .primary)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .padding(.leading, 12)
+                    }
+                }
+            }
         }
     }
 
@@ -729,6 +782,20 @@ private struct LibraryPlaceholderView: View {
                 }
 
                 Spacer()
+
+                if let folder = catalog.folderFilter,
+                   let entry = catalog.folderSections()
+                       .flatMap(\.folders)
+                       .first(where: { $0.filter == folder }) {
+                    Button {
+                        catalog.setFolderFilter(nil)
+                    } label: {
+                        Label(entry.title, systemImage: "folder")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("清除文件夹筛选")
+                }
 
                 if let bucket = catalog.dateBucket {
                     Button {

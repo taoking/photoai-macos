@@ -14,6 +14,8 @@ final class CatalogStore: ObservableObject {
     /// 时间维度筛选。与 `filter` 一样由 Store 持有并参与查询缓存键，
     /// 因此所有 `assets(for:)` 的调用方都自动受它影响，不必逐个改签名。
     @Published private(set) var dateBucket: DateBucket?
+    /// 文件夹维度筛选。与日期、星级正交，三者可叠加。
+    @Published private(set) var folderFilter: FolderFilter?
     /// 图库排序。与筛选一样参与查询缓存键。
     @Published private(set) var sortOrder: LibrarySortOrder = .captureDateDescending
     @Published private(set) var collections: [PhotoCollection] = []
@@ -28,6 +30,7 @@ final class CatalogStore: ObservableObject {
     private var queryCache: [CatalogQueryKey: [PhotoAsset]] = [:]
     private var duplicateAssetIDsCache: Set<UUID>?
     private var dateSectionsCache: (sections: [DateSection], undatedCount: Int)?
+    private var folderSectionsCache: [FolderSection]?
     /// 选片集成员。放在内存里按 ID 取，避免每次重绘都查库。
     private var collectionMembers: [UUID: Set<UUID>] = [:]
     private var assetIndexByID: [UUID: Int] = [:]
@@ -266,7 +269,8 @@ final class CatalogStore: ObservableObject {
             filter: selectedFilter,
             dateBucket: dateBucket,
             sortOrder: sortOrder,
-            collectionID: selectedCollectionID
+            collectionID: selectedCollectionID,
+            folderFilter: folderFilter
         )
         if let cachedAssets = queryCache[cacheKey] {
             return cachedAssets
@@ -297,10 +301,12 @@ final class CatalogStore: ObservableObject {
 
         let duplicateAssetIDs = selectedFilter == .duplicates ? duplicateAssetIDs() : []
         let activeDateBucket = dateBucket
+        let activeFolderFilter = folderFilter
         let filtered = destinationAssets.filter { asset in
             guard selectedFilter.matches(asset, duplicateAssetIDs: duplicateAssetIDs) else { return false }
-            guard let activeDateBucket else { return true }
-            return activeDateBucket.matches(asset)
+            if let activeDateBucket, !activeDateBucket.matches(asset) { return false }
+            if let activeFolderFilter, !activeFolderFilter.matches(asset) { return false }
+            return true
         }
         let result: [PhotoAsset]
         if destination == .recentImports {
@@ -542,6 +548,21 @@ final class CatalogStore: ObservableObject {
         collectionMembers[collectionID] = existing.subtracting(removed)
         selectedAssetIDs.subtract(removed)
         enqueue(.removeCollectionMembers(removed, collectionID))
+    }
+
+    /// 侧边栏「按文件夹」用的分组与计数。结果缓存，避免每次重绘都扫全表。
+    func folderSections() -> [FolderSection] {
+        if let folderSectionsCache { return folderSectionsCache }
+        let result = FolderSectionBuilder.sections(for: assets, sources: sources)
+        folderSectionsCache = result
+        return result
+    }
+
+    func setFolderFilter(_ filter: FolderFilter?) {
+        guard folderFilter != filter else { return }
+        folderFilter = filter
+        invalidateQueryCache()
+        clearSelection()
     }
 
     func setDateBucket(_ bucket: DateBucket?) {
@@ -1045,6 +1066,7 @@ final class CatalogStore: ObservableObject {
         queryCache.removeAll(keepingCapacity: true)
         duplicateAssetIDsCache = nil
         dateSectionsCache = nil
+        folderSectionsCache = nil
     }
 
     private func duplicateAssetIDs() -> Set<UUID> {
@@ -1087,6 +1109,7 @@ private struct CatalogQueryKey: Hashable {
     let dateBucket: DateBucket?
     let sortOrder: LibrarySortOrder
     let collectionID: UUID?
+    let folderFilter: FolderFilter?
 }
 
 private struct DuplicateIndexKey: Hashable {
