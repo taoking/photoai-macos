@@ -20,7 +20,8 @@ bundle_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$inf
 minimum_system_version=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$info_plist")
 artifact_name="PhotoAI-Mac-$version-unsigned.app.zip"
 checksum_name="PhotoAI-Mac-$version-SHA256.txt"
-build_info_name="BUILD-INFO.txt"
+# 三个产物的命名都带上版本号，否则多版本共存时它会第一个撞名。
+build_info_name="PhotoAI-Mac-$version-BUILD-INFO.txt"
 
 mkdir -p "$output_directory"
 for artifact_path in \
