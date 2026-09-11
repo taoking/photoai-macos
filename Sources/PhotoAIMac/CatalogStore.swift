@@ -558,6 +558,15 @@ final class CatalogStore: ObservableObject {
         return result
     }
 
+    /// 当前文件夹筛选的显示名。整个来源显示来源名，子目录显示目录名。
+    func folderFilterTitle(_ filter: FolderFilter) -> String? {
+        guard let section = folderSections().first(where: { $0.sourceID == filter.sourceID }) else {
+            return nil
+        }
+        guard let directory = filter.directory else { return section.sourceName }
+        return section.folders.first { $0.directory == directory }?.title
+    }
+
     func setFolderFilter(_ filter: FolderFilter?) {
         guard folderFilter != filter else { return }
         folderFilter = filter

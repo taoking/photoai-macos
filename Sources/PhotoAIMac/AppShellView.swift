@@ -559,9 +559,25 @@ private struct SidebarView: View {
                 }
 
                 ForEach(sections) { section in
-                    Text(section.sourceName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // 一级文件夹本身可选：选中就是这个来源下的全部照片。
+                    let isSourceSelected = catalog.folderFilter == section.filter
+                    Button {
+                        catalog.setFolderFilter(isSourceSelected ? nil : section.filter)
+                    } label: {
+                        HStack {
+                            Label(section.sourceName, systemImage: "folder")
+                            Spacer()
+                            Text("\(section.count)")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .fontWeight(isSourceSelected ? .semibold : .regular)
+                    .foregroundStyle(isSourceSelected ? Color.accentColor : .primary)
+                    .accessibilityAddTraits(isSourceSelected ? .isSelected : [])
 
                     ForEach(section.folders) { entry in
                         let isSelected = catalog.folderFilter == entry.filter
@@ -783,14 +799,11 @@ private struct LibraryPlaceholderView: View {
 
                 Spacer()
 
-                if let folder = catalog.folderFilter,
-                   let entry = catalog.folderSections()
-                       .flatMap(\.folders)
-                       .first(where: { $0.filter == folder }) {
+                if let folder = catalog.folderFilter, let title = catalog.folderFilterTitle(folder) {
                     Button {
                         catalog.setFolderFilter(nil)
                     } label: {
-                        Label(entry.title, systemImage: "folder")
+                        Label(title, systemImage: "folder")
                             .font(.callout)
                     }
                     .buttonStyle(.bordered)

@@ -32,6 +32,28 @@ struct FolderFilterPathTests {
         #expect(sections[1].folders.map(\.title) == ["（根目录）"])
         // 各级计数自洽。
         #expect(sections[0].count == sections[0].folders.reduce(0) { $0 + $1.count })
+        // 一级文件夹的筛选条件指向整个来源。
+        #expect(sections[0].filter == FolderFilter(sourceID: first.id, directory: nil))
+    }
+
+    /// 一级文件夹（来源本身）可筛选：选中它就是这个来源下的全部照片，含所有子目录。
+    @Test
+    func selectingTheSourceLevelMatchesEveryFolderBeneathIt() {
+        let source = makeSource(name: "101MSDCF")
+        let other = makeSource(name: "别的卷")
+        let wholeSource = FolderFilter(sourceID: source.id, directory: nil)
+
+        #expect(wholeSource.matches(makeAsset(sourceID: source.id, path: "照片_016/A.ARW")))
+        #expect(wholeSource.matches(makeAsset(sourceID: source.id, path: "照片_002/B.ARW")))
+        // 根目录下的也算在内。
+        #expect(wholeSource.matches(makeAsset(sourceID: source.id, path: "C.ARW")))
+        // 但不跨来源。
+        #expect(!wholeSource.matches(makeAsset(sourceID: other.id, path: "照片_016/D.ARW")))
+
+        // 子目录仍然只匹配自己那一层。
+        let subfolder = FolderFilter(sourceID: source.id, directory: "照片_016")
+        #expect(subfolder.matches(makeAsset(sourceID: source.id, path: "照片_016/A.ARW")))
+        #expect(!subfolder.matches(makeAsset(sourceID: source.id, path: "照片_002/B.ARW")))
     }
 
     /// 没有资产的来源不该在侧边栏占一行。
@@ -105,8 +127,17 @@ struct FolderFilterCompositionTests {
         store.setDateBucket(.month(year: 2026, month: 7))
         #expect(store.assets(for: .allPhotos, filter: .fourStars).map(\.filename) == ["A.JPG"])
 
+        // 切到一级文件夹：该来源下全部子目录都算进来。
+        store.setDateBucket(nil)
+        store.setFolderFilter(FolderFilter(sourceID: source.id, directory: nil))
+        #expect(store.assets(for: .allPhotos).count == 4)
+
+        // 全部筛选清空后，四星是跨文件夹、跨月份的三张。
         store.setFolderFilter(nil)
-        #expect(store.assets(for: .allPhotos, filter: .fourStars).map(\.filename).sorted() == ["A.JPG", "D.JPG"])
+        #expect(
+            store.assets(for: .allPhotos, filter: .fourStars).map(\.filename).sorted()
+                == ["A.JPG", "C.JPG", "D.JPG"]
+        )
     }
 
     /// 查询缓存必须把文件夹算进键里，否则切换文件夹会读到上一次的结果。

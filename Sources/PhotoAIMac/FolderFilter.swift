@@ -7,11 +7,14 @@ import Foundation
 /// 这正是"打完分之后既能按文件夹也能按星级找回来"所依赖的。
 struct FolderFilter: Hashable, Sendable {
     let sourceID: UUID
-    /// 相对来源根目录的子目录，不含结尾斜杠；根目录为空串。
-    let directory: String
+    /// 相对来源根目录的子目录，不含结尾斜杠；根目录下的照片为空串。
+    /// `nil` 表示整个来源，含其下全部子目录——也就是一级文件夹本身。
+    let directory: String?
 
     func matches(_ asset: PhotoAsset) -> Bool {
-        asset.sourceID == sourceID && Self.directory(of: asset.relativePath) == directory
+        guard asset.sourceID == sourceID else { return false }
+        guard let directory else { return true }
+        return Self.directory(of: asset.relativePath) == directory
     }
 
     /// 取相对路径的目录部分。`2026/新疆/DSC1.ARW` → `2026/新疆`，`DSC1.ARW` → `""`。
@@ -29,6 +32,8 @@ struct FolderSection: Identifiable, Hashable, Sendable {
     let folders: [FolderEntry]
 
     var id: UUID { sourceID }
+    /// 一级文件夹本身也可筛选：选中它就是"这个来源下的全部照片"。
+    var filter: FolderFilter { FolderFilter(sourceID: sourceID, directory: nil) }
 }
 
 struct FolderEntry: Identifiable, Hashable, Sendable {
